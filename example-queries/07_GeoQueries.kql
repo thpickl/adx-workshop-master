@@ -1,0 +1,56 @@
+job
+| extend geohash=geo_point_to_geohash(todouble(job.['long']), todouble(job.lat),5), speed=todouble(job.speed)
+| order by speed desc
+| take 10000
+| join kind=leftouter (
+    job
+    | where job_name == "Diag%startDeviceVin"
+    | extend vin = tostring(job.vin)
+) on $left.serno == $right.serno
+| project geohash, serno, speed, vin
+| summarize speed=avg(speed) by geohash, serno
+| extend geojson=geo_geohash_to_central_point(geohash)
+| top 50 by speed asc;
+
+
+
+job
+| extend geohash=geo_point_to_geohash(todouble(job.['long']), todouble(job.['lat']),9), speed=todouble(job.speed)
+| order by speed desc
+| take 1000000
+| join kind=leftouter  (
+    job
+    | where job_name == "Diag%startDeviceVin"
+    | extend vin = tostring(job.vin)
+) on $left.serno == $right.serno
+| project geohash, serno, speed, vin
+| summarize speed=avg(speed), data=count(vin), mdr=dcount(serno) by geohash, vin
+| extend geojson=geo_geohash_to_central_point(geohash)
+| where geohash !startswith_cs "spex"
+| order by data desc
+| take 5000;
+
+//Use a little bit of Bing Mapping
+let point_to_map_url = (_point:dynamic, _title:string) 
+{
+    strcat('https://www.bing.com/maps?sp=point.', _point.coordinates[1] ,'_', _point.coordinates[0], '_', url_encode(_title)) 
+};
+// Convert geohash to center point, and then use 'point_to_map_url' to create Bing Map deep-link
+let geohash_to_map_url = (_geohash:string, _title:string)
+{
+    point_to_map_url(geo_geohash_to_central_point(_geohash), _title)
+};
+job
+| extend geohash=geo_point_to_geohash(todouble(job.['long']), todouble(job.lat),6), speed=todouble(job.speed)
+| order by speed desc
+| take 10000
+| join kind=leftouter (
+    job
+    | where job_name == "Diag%startDeviceVin"
+    | extend vin = tostring(job.vin)
+) on $left.serno == $right.serno
+| project geohash, serno, speed, vin
+| summarize speed=avg(speed) by geohash, serno
+| extend geojson=geo_geohash_to_central_point(geohash)
+| extend url = geohash_to_map_url(geohash, strcat(serno, " driving ", speed, " km/h"))
+| top 50 by speed asc;

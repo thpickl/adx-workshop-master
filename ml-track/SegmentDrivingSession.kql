@@ -1,0 +1,130 @@
+//
+// Look on mileage signal for 1 day of a single car
+//
+
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let dt = 1m;
+let car = '4174623';
+signals
+| where signal_ts between(stime..etime) and serno == car
+| make-series avg_km=avg(MILE_KM) default=double(null), med_km=percentile(MILE_KM, 50) default=double(null) on signal_ts from stime to etime step dt
+| render timechart
+
+//
+// Zoom in on 1h with multiple driving sessions
+//
+
+//
+//  time series
+//
+let stime = datetime(2019-04-30 13:00);
+let etime = datetime(2019-04-30 14:00);
+let dt = 1m;
+let car = '4174623';
+signals
+| where signal_ts between(stime..etime) and serno == car
+| make-series avg_km=avg(MILE_KM) default=double(null), med_km=percentile(MILE_KM, 50) default=double(null) on signal_ts from stime to etime step dt
+| render timechart
+
+//
+//  Summarize
+//
+let stime = datetime(2019-04-30 13:00);
+let etime = datetime(2019-04-30 14:00);
+let dt = 1m;
+let car = '4174623';
+signals
+| where signal_ts between(stime..etime) and serno == car
+| summarize avg_km=avg(MILE_KM), med_km=percentile(MILE_KM, 50) by serno, bin(signal_ts, dt) 
+| render timechart
+
+//
+// Segment a single car to active/inactive parts based on time gap
+//
+let stime = datetime(2019-04-30 13:00);
+let etime = datetime(2019-04-30 14:00);
+let dt = 1m;
+let break_gap = 5m;               //  gap of missing samples: below it we fill missing bins; above it we close the session segment 
+let car = '4174623';
+signals
+| where signal_ts between(stime..etime) and serno == car
+| summarize avg_km=avg(MILE_KM), med_km=percentile(MILE_KM, 50) by serno, bin(signal_ts, dt)
+| order by signal_ts asc
+| extend seg_start = iff(signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= break_gap, 1, 0)
+| extend seg_id = row_cumsum(seg_start)
+| render timechart with(title='serno: 4174623, signal: MILE_KM')
+
+//
+// Segment multiple cars to active/inactive parts based on time gap (with summarize)
+//
+let stime = datetime(2019-04-30 13:00);
+let etime = datetime(2019-04-30 14:00);
+let dt = 1m;
+let break_gap = 5m;               //  gap of missing samples: below it we fill missing bins; above it we close the session segment 
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+signals
+| where signal_ts between(stime..etime) and serno in(cars)
+| summarize avg_km=avg(MILE_KM), med_km=percentile(MILE_KM, 50) by serno, bin(signal_ts, dt)
+| order by serno asc, signal_ts asc
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= break_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| render timechart
+
+
+//
+// Segment multiple cars to active/inactive parts based on time gap (raw data, without summarize)
+//
+let stime = datetime(2019-04-30 13:00);
+let etime = datetime(2019-04-30 14:00);
+let break_gap = 5m;               //  gap of missing samples: below it we fill missing bins; above it we close the session segment 
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+signals
+| where signal_ts between(stime..etime) and serno in(cars)
+| order by serno asc, signal_ts asc
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= break_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| summarize count() by serno, seg_id
+
+//
+// Segment multiple cars to active/inactive parts based on time gap (raw data, without summarize)
+// 1 day
+//
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let dt=1m;
+let break_gap = 5m;               //  gap of missing samples: below it we fill missing bins; above it we close the session segment 
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+signals
+| where signal_ts between(stime..etime) and serno in(cars)
+| order by serno asc, signal_ts asc
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= break_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| make-series avg_km=avg(MILE_KM), seg=avg(seg_id) on signal_ts from stime to etime step dt by serno
+| render timechart 
+
+//
+//  Fill missing values (also between segments) and clean anomalies
+//
+let series_clean_anomalies_sf = (series:dynamic, anomalies:dynamic)
+{
+    let anomalies2 = series_multiply(anomalies, anomalies);    //    square anomalies just to convert -1 anomalies to 1  
+    let fnum = series_add(series_multiply(anomalies2, -1), series_multiply(series_less(anomalies2, 1), series));
+    series_fill_linear(fnum, -1)
+}
+;
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let dt=1m;
+let break_gap = 5m;               //  gap of missing samples: below it we fill missing bins; above it we close the session segment 
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+signals
+| where signal_ts between(stime..etime) and serno in(cars)
+| order by serno asc, signal_ts asc
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= break_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| make-series avg_km=avg(MILE_KM) on signal_ts from stime to etime step dt by serno
+| extend avg_km=series_fill_linear(avg_km, 0)
+| extend anomalies = series_decompose_anomalies(avg_km)
+| extend avg_km_c = series_clean_anomalies_sf(avg_km, anomalies)
+| render anomalychart with (anomalycolumns=anomalies)

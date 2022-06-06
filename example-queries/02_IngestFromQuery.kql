@@ -1,0 +1,71 @@
+// ETL use cases : Ingest from query
+
+// In kusto, one can build a KQL query on top of an existing data (in kusto) and then ingest the output of that query to another table.
+// this can be done using the Ingest from query commands set:
+// .set  - means write the result into a table. if another table with the same name already exists the command fails.
+// .append - append the result of the query to the table (old data is kept).
+// .set-or-append - append the result of the query to the table. if the table doesn't exist yet, create it and ingest the data of the query.
+// .set-or-repalce - if the table exists, override the data by the result of the current query. if the table doesn't exist, just create it and ingest the result
+//                   of the query.
+
+// one example, is extracting the car metadata from the job table.
+
+// in some of the queries/commands below, sometimes your are required to add your alias to the table names in order to avoid collision when more than one user runs this query
+// ( each user will have his own entities).
+
+// looking at the job table, the jobname Diag%startDevice represents the metadata of some serno (vehicle).
+// in the job column, we have jsons (dynamic objects in kusto). one can decode these jsons during query time but it is not recommended because of 2 main reasons:
+// 1) because the query won't be readable and too long if you have many properties that you need to extract.
+// 2) query performance and cogs. when we extract exactly what we need with the appropriate target data type, the data will be indexed, compressed better and querying this data will
+//    definitely be more performant.
+database("mdr").job
+| where job_name == 'Diag%startDevice'
+| take 5
+
+
+// the following command will materialize that result into a table in kusto using the .set-or-append command :
+.set-or-append car_metadata_<your_alias> <| database("mdr").job
+| where job_name == 'Diag%startDevice'
+| take 5
+
+
+// showing the table result after invoking the command above.
+car_metadata_<your_alias>
+
+
+// once done, drop the table created by the .set-or-append command
+.drop table car_metadata_<your_alias>
+
+
+
+
+//NOTE: EXTENDED EXAMPLE TO FILL A PREDEFINED TABLE
+
+// the table can be created before invoking the .set-or-append command using the .create table command.
+// this command will create an empty table with the schema specified inside as part of the command.
+.create table car_metadata_<your_alias> (serno:string, occur_time:datetime, vin:string, fp_body:string,  fp_powerclass:string)
+
+
+
+// showing the content of the table (should be empty).
+car_metadata_<your_alias>
+
+
+// Ingesting the query result we had above into an existing table using the .append command
+// database("mdr").job
+// | where jobname == 'Diag%startDevice'
+// | where isnotempty(job["fp"]) and isnotempty(job["fa"]) and isnotempty(job["istufen"])
+// | project serno, occurTime, systemInputTime, vin = tostring(job.vin), fp_body = tostring(job.fp.Body[0]), fp_hybridtype = tostring(job.fp.Hybridtype[0]), fp_powerclass = tostring(job.fp.Powerclass[0]), fp_cylinders = tolong(job.fp.Cylinders[0]), fp_bodylength = tostring(job.fp.Bodylength[0]), fp_leistungsdifferenzierung = tostring(job.fp.Leistungsdifferenzierung[0]), fp_traction = tostring(job.fp.Traction[0]), fp_abgas = tostring(job.fp.Abgas[0]), fp_hochvoltsspeicher_reichweite = tostring(job.fp.Hochvoltspeicher_Reichweite[0]), fp_fuel = tostring(job.fp.Fuel[0]), fp_gearbox = tostring(job.fp.Gearbox[0]), fp_type = tostring(job.fp.Type[0]), fp_lebenszyklusmassnahme = tostring(job.fp.Lebenszyklusmassnahme[0]), fp_steering = tostring(job.fp.Steering[0]), istufen_werk = tostring(job.istufen.WERK), istufen_ho_bak = tostring(job.istufen.HO_BAK), istufen_ho = tostring(job.istufen.HO), fa_lc = tostring(job.fa.lc), fa_zk = tolong(job.fa.zk), fa_pc = tostring(job.fa.pc), fa_eworts = job.fa.eWorts, fa_type = tostring(job.fa.type), fa_eseries = tostring(job.fa.eSeries)
+// | summarize arg_max(occurTime, vin, fp_body, fp_powerclass) by serno
+.append car_metadata_<your_alias> <| database("mdr").job
+| where job_name == 'Diag%startDevice'
+| where isnotempty(job["fp"]) and isnotempty(job["fa"]) and isnotempty(job["istufen"])
+| project serno, occur_time, sys_input_time, vin = tostring(job.vin), fp_body = tostring(job.fp.Body[0]), fp_hybridtype = tostring(job.fp.Hybridtype[0]), fp_powerclass = tostring(job.fp.Powerclass[0]), fp_cylinders = tolong(job.fp.Cylinders[0]), fp_bodylength = tostring(job.fp.Bodylength[0]), fp_leistungsdifferenzierung = tostring(job.fp.Leistungsdifferenzierung[0]), fp_traction = tostring(job.fp.Traction[0]), fp_abgas = tostring(job.fp.Abgas[0]), fp_hochvoltsspeicher_reichweite = tostring(job.fp.Hochvoltspeicher_Reichweite[0]), fp_fuel = tostring(job.fp.Fuel[0]), fp_gearbox = tostring(job.fp.Gearbox[0]), fp_type = tostring(job.fp.Type[0]), fp_lebenszyklusmassnahme = tostring(job.fp.Lebenszyklusmassnahme[0]), fp_steering = tostring(job.fp.Steering[0]), istufen_werk = tostring(job.istufen.WERK), istufen_ho_bak = tostring(job.istufen.HO_BAK), istufen_ho = tostring(job.istufen.HO), fa_lc = tostring(job.fa.lc), fa_zk = tolong(job.fa.zk), fa_pc = tostring(job.fa.pc), fa_eworts = job.fa.eWorts, fa_type = tostring(job.fa.type), fa_eseries = tostring(job.fa.eSeries)
+| summarize arg_max(occur_time, vin, fp_body, fp_powerclass) by serno
+
+// showing the table result after invoking the command.
+car_metadata_<your_alias>
+
+
+// once done, drop the table created by the .set-or-append command
+.drop table car_metadata_<your_alias>

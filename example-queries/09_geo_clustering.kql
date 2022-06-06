@@ -1,0 +1,43 @@
+
+//geo_distance_2points
+let stuttgart = dynamic({"longitude":9.182552, "latitude":48.771449}); 
+let munich = dynamic({"longitude":11.582676, "latitude":48.130847}); 
+print strcat(toint(geo_distance_2points( 
+  todouble(stuttgart.longitude), todouble(stuttgart.latitude), 
+  todouble(munich.longitude), todouble(munich.latitude)) / 1000), ' km')
+
+
+//geo_distance_point_to_line
+print distance_in_meters = geo_distance_point_to_line(-115.199625, 36.210419, 
+dynamic({ "type":"LineString","coordinates":[[lon, lat]]}))
+
+//Finding the rows with geodata
+job
+| take 10
+| where job contains 'lon'
+
+//Extracting a little bit of data
+job
+| project serno, occur_time, speed=todouble(job.speed), torque=todouble(job.torque), lon=todouble(job.['long']), lat=todouble(job.lat)
+| where isnotnull(speed) and isnotnull(lon)
+| take 1000
+
+//Identifiying average speed and count of datapoints with geohashs
+job
+| project serno, occur_time, speed=todouble(job.speed), torque=todouble(job.torque), lon=todouble(job.['long']), lat=todouble(job.lat)
+| where isnotnull(speed) and isnotnull(lon)
+| take 1000
+| extend geohash = geo_point_to_geohash(lon, lat, 2) 
+| summarize count(), avg_speed=avg(speed) by geohash 
+| extend point = geo_geohash_to_central_point(geohash) 
+| project-reorder point, count_ 
+
+//Identifiying average speed and count of datapoints with s2cells
+job
+| project serno, occur_time, speed=todouble(job.speed), torque=todouble(job.torque), lon=todouble(job.['long']), lat=todouble(job.lat)
+| where isnotnull(speed) and isnotnull(lon)
+| take 1000
+| extend s2cell = geo_point_to_s2cell(lon, lat, 2) 
+| summarize count(), avg_speed=avg(speed) by s2cell 
+| extend point = geo_s2cell_to_central_point(s2cell) 
+| project-reorder point, count_ 

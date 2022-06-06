@@ -1,0 +1,64 @@
+// Car Utilization use case.
+
+// in this use case we will calculate for each serno (vehicle) the total utilization in minuites/hours/days.
+// in SQL DW the query looks like this :
+// SELECT     serno,   sum(active_counter) FROM 
+//   (SELECT     serno,     CAST(signal_ts as date) as active_date, CONVERT(varchar(5), signal_ts, 108) as active_time, 1 as active_counter 
+//   FROM MDR.V_SIGNAL_RAW
+//   GROUP BY     serno, CAST(signal_ts as date), CONVERT(varchar(5), signal_ts, 108)) as T
+// GROUP BY serno
+
+// in KQL the query looks like:
+job
+| summarize by serno, bin(occur_time,1m)  
+| summarize total_minutes = count() by serno
+
+
+
+// another version (more optimized one) of the above query but an estimation (using the docunt aggregate
+// which uses the HyperLogLog algorithm) is:
+job
+| summarize total_minutes = dcount(bin(occur_time,1m)) by serno
+
+
+
+// if someone needs the result in hours for example, so he can divide by the literal 1h
+job
+| summarize by serno, bin(occur_time,1m)  
+| summarize total_days = count() * 1m / 1h by serno
+
+
+
+// or even in days, he can divide by the literal 1d
+job
+| summarize by serno, bin(occur_time,1m)  
+| summarize total_days = count() * 1m / 1d by serno
+
+
+
+// if we are interested in getting the top 10 utilized vehicles, we can use the following query:
+job
+| summarize by serno, bin(occur_time,1m)  
+| summarize total_minutes = count() by serno
+| top 10 by total_minutes
+
+
+
+// you can visualize the result of top 10 in a column chart using render operator
+job
+| summarize by serno, bin(occur_time,1m)
+| summarize total_minutes = count() by serno
+| top 10 by total_minutes
+| render columnchart
+
+
+
+// if we are interested in getting the least 10 utilized vehicles, we can use the following query:
+job
+| summarize by serno, bin(occur_time,1m)  
+| summarize total_minutes = count() by serno
+| top 10 by total_minutes asc
+
+
+
+

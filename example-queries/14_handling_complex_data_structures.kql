@@ -1,0 +1,30 @@
+//Working with more advanced data structures
+event
+| take 10
+
+//dtc_event looks a bit more complicated as it has a nested structure
+event
+| where event_type == 'dtc_event'
+| take 10
+
+//Filter down the columns
+event
+| where event_type == 'dtc_event'
+| project serno, occur_time, event
+
+//Unpack the dynamic event column
+event
+| where event_type == 'dtc_event'
+| project serno, occur_time, event
+| evaluate bag_unpack(event)
+| take 10
+
+//Looks like the column UMW_WERTE contains again a array... Let's see how we can access the data in there!
+event
+| where event_type == 'dtc_event'
+| project serno, occur_time, event
+| evaluate bag_unpack(event)
+| project serno, occur_time, UMW_WERTE
+| mv-expand UMW_WERTE
+| evaluate bag_unpack(UMW_WERTE)
+| take 10

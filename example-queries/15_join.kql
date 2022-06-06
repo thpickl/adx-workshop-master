@@ -1,0 +1,9 @@
+event
+| limit 100
+| join kind=leftouter (
+car_meta_v2_latest | project-away activity_id, filename, occur_time, sys_input_time
+) on serno, vin
+| join kind=leftouter (
+svk_data_latest
+| summarize svk_sgbd_array=make_set(ecu_sgbd), svk_sgbm_array=make_set(sgbm_array), svk_sgbd_sgbm_bag=make_bag(pack(ecu_sgbd, sgbm_array)) by serno, vin
+) on serno, vin

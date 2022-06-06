@@ -1,0 +1,64 @@
+//Plotting some wild timeseries data
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-01-09 09:00:00);
+job
+| project serno, occur_time
+| make-series n=count(serno) default=0 on occur_time from stime to etime step 30min
+| render timechart 
+
+//Using the built-in functionality
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-01-09 09:00:00);
+job
+| project serno, occur_time
+| make-series n=count(serno) default=0 on occur_time from stime to etime step 30min
+| render anomalychart  
+
+//Use decompose function
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-01-09 09:00:00);
+let bin_size=30min;
+job
+| project serno, occur_time
+| make-series n=count(serno) default=0 on occur_time from stime to etime step bin_size
+| extend (ad, score, baseline) = series_decompose_anomalies(n)
+| render anomalychart with(anomalycolumns=ad)   
+
+//Add trendline
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-01-09 09:00:00);
+let bin_size=30min;
+let sensitivity=1.5;
+job
+| project serno, occur_time
+| make-series n=count(serno) default=0 on occur_time from stime to etime step bin_size
+| extend (ad, score, baseline) = series_decompose_anomalies(n, sensitivity, -1, 'linefit')
+| render anomalychart with(anomalycolumns=ad)   
+
+//Change sensitivity to 5
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-01-09 09:00:00);
+let bin_size=30min;
+let sensitivity=5;
+job
+| project serno, occur_time
+| make-series n=count(serno) default=0 on occur_time from stime to etime step bin_size
+| extend (ad, score, baseline) = series_decompose_anomalies(n, sensitivity, -1, 'linefit')
+| render anomalychart with(anomalycolumns=ad)
+
+
+//
+
+//Finding the right data
+job
+| where job_name == "eaDrivingLog"
+| order by occur_time desc
+| take 100
+
+//Another example
+job
+| where job_name == "eaDrivingLog" and serno == "4404971"
+| project serno, occur_time, val=todouble(job.avgSpeedKmh)
+| where val<350
+| render anomalychart  
+ 

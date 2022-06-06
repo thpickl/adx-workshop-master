@@ -1,0 +1,234 @@
+// Check FSPListe
+event 
+|where vin == "WBA21CF020H019162" 
+|where event_type == "dtc_event" 
+//|where event.ECU_SGBD contains ("TEE")
+|where event.F_ORT_T contains ("SecOC") 
+//|where event.FEHLERORT_HEX == "0x021493" 
+|project ECU_SGBD=tostring(event.ECU_SGBD), FO_HEX=tostring(event.FEHLERORT_HEX),FO_TXT=tostring(event.F_ORT_T), vin, occur_time, serno 
+|summarize (FSPletztesAuslesen, FO_TXT, ECU_SGBD)=arg_max(occur_time,FO_TXT, ECU_SGBD) by FO_HEX, vin, serno
+
+// How does the data look like?
+event 
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| take 10
+
+// Use bag_unpack and mv-expand to extract information
+// Understand bag_unpack
+event 
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+//| mv-expand XWES
+//| evaluate bag_unpack(XWES)
+| take 10
+
+//Understand mv-expand
+event 
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+| mv-expand XWES
+| take 10
+
+//And one more bag_unpack
+event 
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+| mv-expand XWES
+| evaluate bag_unpack(XWES)
+| take 10
+
+// Create a function to extract master data
+.create-or-alter function 
+with (docstring = 'Master Data Extraction', folder='chkreibi')
+master_data(id: int, gran: timespan)  {car_eseries_istufe | where serno == id| where isnotempty(isHo) and isnotempty(eseries) and isnotempty(isWerk) | extend join_ts = bin(occur_time, gran)}
+
+master_data('4405598', 1m)
+
+
+
+// Combine those two
+let id = toscalar(event 
+| where vin == "WBA21CF020H019162"
+| distinct serno);
+let FSPListe = materialize(event 
+| where vin == "WBA21CF020H019162" 
+| where event_type == "dtc_event" 
+//|where event.ECU_SGBD contains ("TEE")
+| where event.F_ORT_T contains ("SecOC") 
+//|where event.FEHLERORT_HEX == "0x021493" 
+| project ECU_SGBD=tostring(event.ECU_SGBD), FO_HEX=tostring(event.FEHLERORT_HEX),FO_TXT=tostring(event.F_ORT_T), vin, occur_time, serno 
+| summarize (FSPletztesAuslesen, FO_TXT, ECU_SGBD)=arg_max(occur_time,FO_TXT, ECU_SGBD) by FO_HEX, vin, serno);
+FSPListe | join (event 
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+)
+on $left.ECU_SGBD == $right.ECU_SGBD, serno 
+| project-away vin1, serno1
+| where occur_time < FSPletztesAuslesen 
+| summarize (SVK_Lesedatum, XWES)=arg_max(occur_time, XWES) by FO_HEX, FO_TXT, ECU_SGBD, vin, serno, FSPletztesAuslesen
+| mv-expand XWES
+| evaluate bag_unpack(XWES)
+| extend join_ts = bin(SVK_Lesedatum, 1s)
+| join kind = leftouter (master_data(id, 1s)) on ($left.serno == $right.serno) //and ($left.join_ts == $right.join_ts)
+
+// Looks pretty good
+
+
+
+//Additional
+let stime = ago(4d);
+let identifier_cache = materialize(event 
+| where occur_time > stime
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+| order by serno, occur_time
+| extend rn = row_number()
+| mv-expand XWES
+| evaluate bag_unpack(XWES)
+| project serno, vin, rn, occur_time, XWE_PROZESSKLASSE_ABK, XWE_SGBM_IDENTIFIER, XWE_VERSION, XWE_SGBMID
+| evaluate pivot(XWE_PROZESSKLASSE_ABK, any(XWE_SGBM_IDENTIFIER), vin, serno, rn, occur_time) //, any(serno), any(XWE_SGBM_IDENTIFIER), any(XWE_VERSION), any(XWE_SGBMID)
+| project-rename XWE_SGBM_IDENTIFIER_HWEL = HWEL, 
+                 XWE_SGBM_IDENTIFIER_BTLD = BTLD, 
+                 XWE_SGBM_IDENTIFIER_SWFL = SWFL,
+                 XWE_SGBM_IDENTIFIER_SWFK = SWFK,
+                 XWE_SGBM_IDENTIFIER_NAVD = NAVD,
+                 XWE_SGBM_IDENTIFIER_ENTD = ENTD,
+                 XWE_SGBM_IDENTIFIER_CAFD = CAFD, 
+                 XWE_SGBM_IDENTIFIER_HWAP = HWAP, 
+                 XWE_SGBM_IDENTIFIER_GWTB = GWTB, 
+                 XWE_SGBM_IDENTIFIER_FLSL = FLSL, 
+                 XWE_SGBM_IDENTIFIER_IBAD = IBAD);
+let version_cache = materialize(event 
+| where occur_time > stime
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+| order by serno, occur_time
+| extend rn = row_number()
+| mv-expand XWES
+| evaluate bag_unpack(XWES)
+| project serno, vin, rn, occur_time, XWE_PROZESSKLASSE_ABK, XWE_SGBM_IDENTIFIER, XWE_VERSION, XWE_SGBMID
+| evaluate pivot(XWE_PROZESSKLASSE_ABK, any(XWE_VERSION), vin, serno, rn, occur_time) //, any(serno), any(XWE_SGBM_IDENTIFIER), any(XWE_VERSION), any(XWE_SGBMID)
+| project-rename XWE_VERSION_HWEL = HWEL, 
+                 XWE_VERSION_BTLD = BTLD, 
+                 XWE_VERSION_SWFL = SWFL, 
+                 XWE_VERSION_SWFK = SWFK,
+                 XWE_VERSION_NAVD = NAVD,
+                 XWE_VERSION_ENTD = ENTD,
+                 XWE_VERSION_CAFD = CAFD, 
+                 XWE_VERSION_HWAP = HWAP, 
+                 XWE_VERSION_GWTB = GWTB, 
+                 XWE_VERSION_FLSL = FLSL, 
+                 XWE_VERSION_IBAD = IBAD);
+let sgbm_cache = materialize(event 
+| where occur_time > stime
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+| order by serno, occur_time
+| extend rn = row_number()
+| mv-expand XWES
+| evaluate bag_unpack(XWES)
+| project serno, vin, rn, occur_time, XWE_PROZESSKLASSE_ABK, XWE_SGBM_IDENTIFIER, XWE_VERSION, XWE_SGBMID
+| evaluate pivot(XWE_PROZESSKLASSE_ABK, any(XWE_SGBMID), vin, serno, rn, occur_time) //, any(serno), any(XWE_SGBM_IDENTIFIER), any(XWE_VERSION), any(XWE_SGBMID)
+| project-rename XWE_SGBMID_HWEL = HWEL, 
+                 XWE_SGBMID_BTLD = BTLD, 
+                 XWE_SGBMID_SWFL = SWFL,
+                 XWE_SGBMID_SWFK = SWFK,
+                 XWE_SGBMID_NAVD = NAVD,
+                 XWE_SGBMID_ENTD = ENTD,
+                 XWE_SGBMID_CAFD = CAFD, 
+                 XWE_SGBMID_HWAP = HWAP, 
+                 XWE_SGBMID_GWTB = GWTB, 
+                 XWE_SGBMID_FLSL = FLSL, 
+                 XWE_SGBMID_IBAD = IBAD);
+identifier_cache
+| join version_cache on $left.vin == $right.vin and $left.rn == $right.rn
+| project-away vin1, serno1, rn1
+| join sgbm_cache on $left.vin == $right.vin and $left.rn == $right.rn
+| project-away vin1, serno1, rn1, rn
+| take 100
+
+
+
+//Additional
+let stime = ago(4d);
+let identifier_cache = materialize(event 
+| where occur_time > stime
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+| order by serno, occur_time
+| extend rn = row_number()
+| mv-expand XWES
+| evaluate bag_unpack(XWES)
+| project serno, vin, rn, occur_time, XWE_PROZESSKLASSE_ABK, XWE_SGBM_IDENTIFIER, XWE_VERSION, XWE_SGBMID
+| evaluate pivot(XWE_PROZESSKLASSE_ABK, any(XWE_SGBM_IDENTIFIER), vin, serno, rn, occur_time) //, any(serno), any(XWE_SGBM_IDENTIFIER), any(XWE_VERSION), any(XWE_SGBMID)
+| project-rename XWE_SGBM_IDENTIFIER_HWEL = HWEL, 
+                 XWE_SGBM_IDENTIFIER_BTLD = BTLD, 
+                 XWE_SGBM_IDENTIFIER_SWFL = SWFL,
+                 XWE_SGBM_IDENTIFIER_SWFK = SWFK,
+                 XWE_SGBM_IDENTIFIER_NAVD = NAVD,
+                 XWE_SGBM_IDENTIFIER_ENTD = ENTD,
+                 XWE_SGBM_IDENTIFIER_CAFD = CAFD, 
+                 XWE_SGBM_IDENTIFIER_HWAP = HWAP, 
+                 XWE_SGBM_IDENTIFIER_GWTB = GWTB, 
+                 XWE_SGBM_IDENTIFIER_FLSL = FLSL, 
+                 XWE_SGBM_IDENTIFIER_IBAD = IBAD);
+let version_cache = materialize(event 
+| where occur_time > stime
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+| order by serno, occur_time
+| extend rn = row_number()
+| mv-expand XWES
+| evaluate bag_unpack(XWES)
+| project serno, vin, rn, occur_time, XWE_PROZESSKLASSE_ABK, XWE_SGBM_IDENTIFIER, XWE_VERSION, XWE_SGBMID
+| evaluate pivot(XWE_PROZESSKLASSE_ABK, any(XWE_VERSION), vin, serno, rn, occur_time) //, any(serno), any(XWE_SGBM_IDENTIFIER), any(XWE_VERSION), any(XWE_SGBMID)
+| project-rename XWE_VERSION_HWEL = HWEL, 
+                 XWE_VERSION_BTLD = BTLD, 
+                 XWE_VERSION_SWFL = SWFL, 
+                 XWE_VERSION_SWFK = SWFK,
+                 XWE_VERSION_NAVD = NAVD,
+                 XWE_VERSION_ENTD = ENTD,
+                 XWE_VERSION_CAFD = CAFD, 
+                 XWE_VERSION_HWAP = HWAP, 
+                 XWE_VERSION_GWTB = GWTB, 
+                 XWE_VERSION_FLSL = FLSL, 
+                 XWE_VERSION_IBAD = IBAD);
+let sgbm_cache = materialize(event 
+| where occur_time > stime
+| where event_type == "csvk_event" 
+| project event, vin, serno, occur_time
+| evaluate bag_unpack(event)
+| order by serno, occur_time
+| extend rn = row_number()
+| mv-expand XWES
+| evaluate bag_unpack(XWES)
+| project serno, vin, rn, occur_time, XWE_PROZESSKLASSE_ABK, XWE_SGBM_IDENTIFIER, XWE_VERSION, XWE_SGBMID
+| evaluate pivot(XWE_PROZESSKLASSE_ABK, any(XWE_SGBMID), vin, serno, rn, occur_time) //, any(serno), any(XWE_SGBM_IDENTIFIER), any(XWE_VERSION), any(XWE_SGBMID)
+| project-rename XWE_SGBMID_HWEL = HWEL, 
+                 XWE_SGBMID_BTLD = BTLD, 
+                 XWE_SGBMID_SWFL = SWFL,
+                 XWE_SGBMID_SWFK = SWFK,
+                 XWE_SGBMID_NAVD = NAVD,
+                 XWE_SGBMID_ENTD = ENTD,
+                 XWE_SGBMID_CAFD = CAFD, 
+                 XWE_SGBMID_HWAP = HWAP, 
+                 XWE_SGBMID_GWTB = GWTB, 
+                 XWE_SGBMID_FLSL = FLSL, 
+                 XWE_SGBMID_IBAD = IBAD);
+identifier_cache
+| join version_cache on $left.vin == $right.vin and $left.rn == $right.rn
+| project-away vin1, serno1, rn1
+| join sgbm_cache on $left.vin == $right.vin and $left.rn == $right.rn
+| project-away vin1, serno1, rn1, rn
+| take 100
+ 

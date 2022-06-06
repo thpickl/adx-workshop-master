@@ -1,0 +1,17 @@
+.show cluster extents 
+| summarize sizeInGBOriginal=sum(OriginalSize)/(1024*1024*1024), sizeInGBCompressed=sum(CompressedSize)/(1024*1024*1024) by bin(MinCreatedOn, 1d)
+| order by MinCreatedOn asc
+| serialize cumSumOriginal=row_cumsum(sizeInGBOriginal)
+| serialize cumSumCompressed=row_cumsum(sizeInGBCompressed)
+| render timechart
+
+.show cluster extents 
+| summarize sizeInGBOriginal=sum(OriginalSize)/(1024*1024*1024), sizeInGBCompressed=sum(CompressedSize)/(1024*1024*1024) by bin(MinCreatedOn, 1d)
+| summarize originalGB=sum(sizeInGBOriginal), compressedGB=sum(sizeInGBCompressed)
+| extend compFactor=originalGB/compressedGB
+
+
+.show cluster extents 
+| summarize sizeInTBCompressed=sum(CompressedSize)/(1024*1024*1024*1024), sizeInTBOriginal=sum(OriginalSize)/(1024*1024*1024*1024)
+
+.show queries

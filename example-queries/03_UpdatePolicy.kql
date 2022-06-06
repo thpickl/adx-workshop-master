@@ -1,0 +1,134 @@
+// ETL use cases : Update policy 
+
+// update policy is a policy set on a table that instructs Kusto to automatically run a query on newly ingested data on the source table and ingest the result of that
+// query into the target table.
+// This allows, for example, the creation of a one table as the filtered view of another table, possibly with a different schema, retention policy, etc.
+
+// in some of the queries/commands below, sometimes your are required to add your alias to the table names in order to avoid collision when more than one user runs this query
+// ( each user will have his own entities).
+
+
+// in this use case, the queries are built on top of the job table which has 45,583,418 records
+job 
+| count 
+
+
+
+// StdBusData jobs will be parsed and ingested to some target table with explicit schema.
+// there are 19,075,433 jobs like these.
+job 
+| where job_name == "StdBusData"
+| count 
+
+
+
+// this query samples 5 StdBusData jobs
+job
+| where job_name == "StdBusData"
+| sample 5 
+
+
+// One can get the schema of these jobs if interested to extract all properties (hopefully all jobs has the exact same properties).
+// in the coming examples we will extract only specific properties.
+// the below query using the buildschema aggregate function will create the aggregated schema of the job column
+// defining the properties and the type for each property.
+// this query is heavy because it digs into all the dynamic objects and tries to detect the type of each property.
+// this aggregate is used in order to detect the target schema desired for parsing a dynamic object values into columns where each 
+// column represents a property in that json.
+job
+| where job_name == "StdBusData"
+| summarize buildschema(job)
+
+
+
+// update policy is useful here in order to create a view on top of the job table with the desired schema by parsing the jobs
+// of StdBusData and ingesting them into the target view during ingestion time.
+// it means when some data arrives to job table, the update policy of the new view will be triggered, run the query on the newly ingested
+// data and push the result to that view.
+// in this example the view will include these columns: rpm, fuel, lat, long, gpsSpeed, torque.
+// the types of these properties are resolved with the above query using buildschema: long, long, double, double, long, long respictively.
+
+// first step is to create the view which will include the parsed values.
+// since the update policy is based on a KQL query, it is recommended to use this query to create your empty table with the desired schema.
+// .set-or-append StdBusData_view <| KQL_QUERY_PARSES_PROPERTIES | limit 0
+// this means create an empty table StdBusData_view with the same schema as the KQL_QUERY_PARSES_PROPERTIES result.
+
+// this is the KQL_QUERY_PARSES_PROPERTIES
+job
+| where job_name == "StdBusData"
+| project serno, occur_time , sys_input_time , rpm = tolong(job["rpm"]), fuel = tolong(job["fuel"]), latitude = todouble(job["lat"]), longitude = todouble(job["long"]), gps_speed = tolong(job["gpsSpeed"]), torque = tolong(job["torque"])
+| limit 10
+
+
+// creating the target view named StdBusData_view_<your_alias>
+.set-or-append StdBusData_view_<your_alias> <| job
+| where job_name == "StdBusData"
+| project serno, occur_time , sys_input_time , rpm = tolong(job["rpm"]), fuel = tolong(job["fuel"]), latitude = todouble(job["lat"]), longitude = todouble(job["long"]), gps_speed = tolong(job["gpsSpeed"]), torque = tolong(job["torque"])
+| limit 0
+
+
+
+// creating a source job table where the data streams (from event-hub/other update policy/.ingest command/.set-or-append command ....)
+.set-or-append job_<your_alias> <| job | limit 0
+
+
+
+// create a stored function in the metadata which is the query that will be triggered once new data is ingested into job_<your_alias>
+.create-or-alter function ParseStdBusData_<your_alias>()
+{
+    job_<your_alias>
+    | where job_name == "StdBusData"
+    | project serno, occur_time , sys_input_time , rpm = tolong(job["rpm"]), fuel = tolong(job["fuel"]), latitude = todouble(job["lat"]), longitude = todouble(job["long"]), gps_speed = tolong(job["gpsSpeed"]), torque = tolong(job["torque"])
+}
+
+
+
+// this command will define the update policy on the StdBusData_view_<your_alias> view defined above.
+// the parameters are :
+// 1) Source - the base table (in this case it is the job_<your_alias> table).
+// 2) Query - the query to be triggered when new data is ingested in the view defined in (1) and ingests the results into the view StdBusData_view_<your_alias>.
+// 3) IsTransactional - true means if the update policy fails (for some reason like query timeout or whatever) so the whole ingestion command fails (the data won't be commited to the Source).
+//                      false means if the update policy fails, the data is commited to the Source table and the derived table won't be updated.
+// 4) PropagateIngestionProperties - tells whether or not to propagate ingestion properties (like tags ...)
+.alter table StdBusData_view_<your_alias> policy update
+@'[{"IsEnabled": true, "Source": "job_<your_alias>", "Query": "ParseStdBusData_<your_alias>()", "IsTransactional": false, "PropagateIngestionProperties": false}]'
+
+
+
+// streaming some data of the job data into job_<your_alias> view (any other ingestion method will result the same into StdBusData_view_<your_alias>)
+.set-or-append job_<your_alias> <| job
+| where job_name == "StdBusData"
+| limit  5 
+
+
+
+// checking the StdBusData_view_<your_alias> content, it includes the parsed values from the newly ingested data into job_<your_alias> view.
+StdBusData_view_<your_alias>
+
+
+
+// let's even try to ingest data which has StdBusData and other jobname and see that only the StdBusData is being processed and parsed.
+// to do this, we can sample 5 records of StdBusData and 5 records of jobname != StdBusData.
+// this is the query which generates the data (make sure it returns 10 records) :
+union (job | where job_name == "StdBusData" | sample 5), (job | where job_name != "StdBusData" | sample 5)
+
+
+
+//stream this data into the job_<your_alias> table:
+.set-or-append job_<your_alias> <| 
+union 
+(job | where job_name == "StdBusData" | sample 5),
+(job | where job_name != "StdBusData" | sample 5)
+
+
+
+// checking the StdBusData_view_<your_alias> content, it includes the parsed values from the newly ingested data into job_<your_alias> view.
+StdBusData_view_<your_alias>
+
+
+// deleting all tables created in this session.
+.drop table StdBusData_view_<your_alias>
+
+.drop table job_<your_alias>
+
+.drop function ParseStdBusData_<your_alias> 

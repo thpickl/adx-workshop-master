@@ -1,0 +1,134 @@
+// Basics
+
+// 2 billion records 
+signals_live
+| count 
+
+signals_live
+| where signal_ts > ago(20d)
+| count
+
+
+job
+| count
+
+job
+| summarize count() by serno
+| order by count_
+
+
+job
+| summarize c=count() by serno
+| order by c
+
+job
+| summarize max(occur_time) by job_name
+| order by max_occur_time desc
+
+job
+| project serno, job_name
+| take 10
+
+job
+| project-away serno, job_name
+| take 10
+
+// dual usage of text an Json 
+job
+| where occur_time > ago(20d) 
+| where job_name like 'Bus'
+| distinct job_name 
+
+
+// summarize 
+// (More) advanced operators
+job
+| summarize count() by job_name 
+| order by count_
+
+car_meta_v2
+| where serno == "3703033"
+| take 10
+
+// render 
+job
+| where serno == "3703033"
+| project serno, occur_time, temp = todouble(job.aussenTemp)
+| where isnotnull(temp)
+| where occur_time > ago(3d)
+| render timechart 
+
+// bin 
+job
+| where occur_time > ago(10d)
+| project serno, occur_time, temp = todouble(job.aussenTemp)
+| where isnotnull(temp)
+| summarize avg(temp) by bin(occur_time, 360min)
+| render timechart 
+
+job
+| summarize signalCount=count() by job_name
+| render piechart 
+
+// dynamics columns 
+job
+| take 10
+
+// dual usage of text an Json
+job
+| where occur_time > ago(20d) 
+| where ['filename'] hassuffix "Engine"
+| project progDate=tostring(job.event), ['filename']
+| where isnotempty( progDate)
+| summarize count() by progDate, ['filename']
+
+//at which speed do cars fail with with status?
+job
+| project speed = todouble(job.speed), stateOfCar = tostring(job.state)
+| summarize percentiles(speed, 1,50, 99) by stateOfCar
+
+//difference between systeminput and occurtime
+job
+| project diffTime = sys_input_time - occur_time
+| take 100000
+| summarize count() by bin(diffTime, 1m)
+| where diffTime > 0s
+| order by diffTime asc
+| take 1000
+
+// Joins
+let JobData = (offset:int) 
+{ 
+  job
+  | where occur_time >= ago(1d*offset)
+  | where job_name == "StdBusData"
+  | project ts = occur_time, serno, mdrTemperature=todouble(job.mdrTemperature)
+  | summarize mdrTemperature=avg(mdrTemperature) by serno, bin(ts, 1m)
+};
+let RawData = (offset:int) 
+{ 
+  signals
+  | where signal_ts  >= ago(1d*offset)
+  | project ts = signal_ts, serno, ambientTemperature=TEMP_UIF
+  | summarize ambientTemperature=avg(ambientTemperature) by serno, bin(ts, 1m)
+};
+let offset=2;
+JobData(offset)
+| join kind=inner
+    (
+        RawData(offset)
+    ) on serno, ts
+| project serno, ts, ambientTemperature, mdrTemperature
+
+
+//Get an understanding of the schema of the table.
+.show table job schema as json 
+
+.show table job cslschema 
+
+//Dynamic columns are awesome but also might be a bit confusing if schemas change a lot. Here is a way to identify all values in a dynamic column
+event
+| summarize buildschema(event)
+
+job
+| summarize buildschema(job)

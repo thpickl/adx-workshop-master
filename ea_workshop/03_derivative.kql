@@ -1,0 +1,55 @@
+signals
+| take 10
+
+// Nice rendering
+let id = 3703007;
+let interval = 1m;
+let stime = datetime(2020-04-01);
+let etime = datetime(2020-04-15);
+signals
+| where serno == id
+| where signal.ST_CON_VEH == 10
+| project serno, signal_ts, temp=todouble(signal.TEMP_EX), temp_unf = todouble(signal.TEMP_EX_UNFILT), lon = todouble(signal.ST_LONG_NAVI), lat = todouble(signal.ST_LAT_NAVI)
+| where isnotempty(temp)
+| make-series avg(temp) on signal_ts from stime to etime step interval by serno
+| extend derivative=series_fir(avg_temp, dynamic([1,-1]))
+| project-away avg_temp
+| render timechart
+
+//Now do a table again
+.set-or-replace async map_derivative <| 
+let id = dynamic([4405594, 4196428]);
+let interval = 1s;
+let stime = datetime(2020-04-13);
+let etime = datetime(2020-04-14);
+database('mdr-signals').signals
+| where serno in (id)
+| where signal.ST_CON_VEH == 10
+| project serno, signal_ts, temp=todouble(signal.TEMP_EX), temp_unf = todouble(signal.TEMP_EX_UNFILT), lon = todouble(signal.ST_LONG_NAVI), lat = todouble(signal.ST_LAT_NAVI)
+| where isnotempty(temp)
+| make-series temp=avg(temp), lon=max(lon), lat=max(lat) on signal_ts from stime to etime step interval by serno
+| extend derivative=series_fir(temp, dynamic([1,-1]))
+//| project-away avg_temp
+| mv-expand signal_ts, temp, derivative, lon, lat
+| project serno, todatetime(signal_ts), todouble(temp), todouble(derivative), todouble(lon), todouble(lat)
+| where lon != 0 and lat != 0 and derivative != 0
+
+| join kind = inner hint.strategy=shuffle (
+signals 
+| where serno == 4405594
+| where signal.ST_CON_VEH == 10
+| project serno, signal_ts, temp=todouble(signal.TEMP_EX), temp_unf = todouble(signal.TEMP_EX_UNFILT), lon = todouble(signal.ST_LONG_NAVI), lat = todouble(signal.ST_LAT_NAVI)
+| where isnotempty(temp)
+| extend join_ts = tostring(bin(signal_ts, 1s))
+| take 100
+) on ($left.serno == $right.serno) and ($left.join_ts==$right.join_ts)
+
+
+signals 
+| where serno == 4405594
+| where signal.ST_CON_VEH == 10
+| project serno, signal_ts, temp=todouble(signal.TEMP_EX), temp_unf = todouble(signal.TEMP_EX_UNFILT), lon = todouble(signal.ST_LONG_NAVI), lat = todouble(signal.ST_LAT_NAVI)
+| where isnotempty(temp)
+| extend join_ts = tostring(bin(signal_ts, 1s))
+| count
+

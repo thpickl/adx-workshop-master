@@ -1,0 +1,46 @@
+// ETL use cases : Json mapping during ingestion
+// When the source data is in JSON format, this maps the file content to the Kusto table.
+// see here for more details: https://docs.microsoft.com/en-us/azure/kusto/management/mappings
+
+
+// in some of the queries/commands below, sometimes your are required to add your alias to the table names in order to avoid collision when more than one user runs this query
+// ( each user will have his own entities).
+
+// Simple exampe: 
+//create a table json_mapping_example_<your_alias>
+.create table json_mapping_example_<your_alias>(serno:string, occurTime:datetime, speed_kmh:long)
+
+
+
+// one way to do this is by providing the json mapping explicity within the command itself:
+.ingest inline into table json_mapping_example_<your_alias> with (format='json', jsonMapping = '[{ "column" : "serno", "datatype" : "string", "path" : "$.serno"},{ "column" : "occurTime", "datetype" : "datetime", "path" : "$.occurTime" },{ "column" : "speed_kmh", "datetype" : "long", "path" : "$.speed_kmh" }]') <|
+{"serno" : "1234567", "occurTime" : "2019-05-22", "speed_kmh" : 122}
+{"serno" : "7891911", "occurTime" : "2019-05-23", "speed_kmh" : 188}
+
+
+
+// show the content of the table
+json_mapping_example_<your_alias>
+
+
+// the other option is to predefine the mapping so in the .ingest commands one can provide this mapping while configuring the DM in kusto to read data from some eventhub so that data being read from 
+// event hub will be parsed by the mapping provided in the property jsonMappingReference.
+.create table json_mapping_example_<your_alias> ingestion json mapping "Mapping1" '[{ "column" : "serno", "datatype" : "string", "path" : "$.serno"},{ "column" : "occurTime", "datetype" : "datetime", "path" : "$.occurTime" },{ "column" : "speed_kmh", "datetype" : "long", "path" : "$.speed_kmh" }]'
+
+
+
+// Ingest some inline data to examine this (or ingesting from storage/event-hub... could work exactly the same
+// once we define the mapping) with reference to the required mapping (jsonMappingReference = 'Mapping1').
+.ingest inline into table json_mapping_example_<your_alias> with (format='json', jsonMappingReference='Mapping1') <| 
+{"serno" : "1234567", "occurTime" : "2019-05-24", "speed_kmh" : 155}
+{"serno" : "7891911", "occurTime" : "2019-05-25", "speed_kmh" : 166}
+
+
+
+// show the content of the table
+json_mapping_example_<your_alias>
+
+
+
+// drop the table once done.
+.drop table json_mapping_example_<your_alias>

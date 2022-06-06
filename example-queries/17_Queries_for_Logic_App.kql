@@ -1,0 +1,40 @@
+//Some preparation steps
+
+//Look into the signals table
+database('mdr-signals').signals
+| take 10
+
+//What is the newest timestamp?
+database('mdr-signals').signals
+| summarize max(signal_ts)
+
+//database('ws-msft').test_table
+
+//If it already exists, drop a table
+.drop table test_table
+
+//Create a table with timestamps that are older than 10 days
+.set-or-append async test_table <|
+database('mdr-signals').signals
+| where signal_ts <= ago(10d) //signal_ts >= todatetime("2020-06-25 00:00:00") and 
+| project serno, signal_ts, v1 = toint(signal.ALIV_COU_ST_BLT_CT_SOCCU)
+
+//Check newest timestamp after the query
+database('ws-msft').test_table
+| summarize max(signal_ts)
+
+//Check count of the new table
+database('ws-msft').test_table
+| count
+
+
+//Queries for Logic App
+//Watermark Query
+database('ws-msft').test_table | summarize max(signal_ts)
+
+//Table Update
+.set-or-append test_table  <|
+database('mdr-signals').signals
+| where signal_ts > todatetime("@{items('For_each')?['max_signal_ts']}") //Pay attention to the dynamic expression
+| project serno, signal_ts, v1 = toint(signal.ALIV_COU_ST_BLT_CT_SOCCU)
+| take 10

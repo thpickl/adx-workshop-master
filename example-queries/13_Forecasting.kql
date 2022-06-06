@@ -1,0 +1,24 @@
+job
+| where job contains 'oel'
+| take 10
+
+//Plotting some wild timeseries data
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-01-09 09:00:00);
+job
+| project serno, occur_time
+| make-series n=count(serno) default=0 on occur_time from stime to etime step 30min
+| render timechart 
+
+
+//Forecasting
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-02-25 09:00:00);
+let bin_size=30min;
+let horizon=30d;
+let forecast_bins=tolong(horizon/bin_size);
+job
+| project serno, occur_time
+| make-series n=count(serno) default=0 on occur_time from stime to etime step bin_size
+| extend forecast = series_decompose_forecast(n, forecast_bins)
+| render timechart 

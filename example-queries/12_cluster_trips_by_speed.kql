@@ -1,0 +1,31 @@
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let break_gap = 5m;               //  gap of missing samples: below it we fill missing bins; above it we close the session segment
+let zero_speed_threshold = 10s;
+//let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+job
+| project occur_time, serno, km=toint(job.MILE_KM), speed=todouble(job.V_VEH_COG), engine_speed=todouble(job.AVL_RPM_ENG_CRSH), driver_buckled=toint(job.ST_SEAT_OCCU_DR)
+| where occur_time between(stime..etime) //and serno in(cars)
+| order by serno asc, occur_time asc
+| extend seg_start = iff((occur_time - prev(occur_time, 1, datetime(2000-01-01)) >= break_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| summarize min(occur_time), max(occur_time), num=count() by serno, seg_id
+| order by serno asc, seg_id asc
+
+//Can we cluster those trips?
+let stime = datetime(2020-01-30);
+let etime = datetime(2020-02-01);
+let break_gap = 5m;               //  gap of missing samples: below it we fill missing bins; above it we close the session segment
+let zero_speed_threshold = 10s;
+job
+| project occur_time, serno, km=toint(job.MILE_KM), speed=todouble(job.V_VEH_COG), driver_buckled=toint(job.ST_SEAT_OCCU_DR)
+| where occur_time between(stime..etime) //and serno in(cars)
+| order by serno asc, occur_time asc
+| extend seg_start = iff((occur_time - prev(occur_time, 1, datetime(2000-01-01)) >= break_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| where isnotnull(speed) 
+| summarize min(occur_time), max(occur_time), avg(speed), num=count() by serno, seg_id
+| order by serno asc, seg_id asc
+| extend cluster_id=double(null)
+| invoke kmeans_sf(3, pack_array("avg_speed"), "cluster_id")
+

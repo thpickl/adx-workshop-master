@@ -1,0 +1,22 @@
+let versionProperty = "XWEs";
+let binningPeriod = 1d;
+let serrno = "4405636";
+job
+| where job_name == "Diag%startEngine" 
+//| where serno == serrno
+| extend csvk = job.csvk
+| mv-expand bagexpansion=array csvk
+| extend diagnoseAdresse = tostring(csvk[0]), versions= csvk[1][versionProperty]
+| project serno, versions, binnedTime=bin(occur_time, binningPeriod), diagnoseAdresse
+| mv-expand versions
+| project version = tostring(versions), serno, binnedTime, diagnoseAdresse
+| distinct * 
+| join kind=inner hint.strategy=broadcast  (
+    job
+    | where job_name == "StdBusData" 
+    //| where serno == serrno
+    | extend todouble(job.kmStand), binnedTime=bin(occur_time, binningPeriod)
+    ) on serno, binnedTime
+| project serno, binnedTime, version, kmStand=job_kmStand
+| summarize diff = max(kmStand)-min(kmStand) by ['version'], binnedTime
+| summarize sum(diff)/1000 by ['version']

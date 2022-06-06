@@ -1,0 +1,91 @@
+//
+// Trip definition #1:
+//
+// 1)	A new trip starts, whenever vehicle speed (V_VEH_COG) is going down to zero for > 10 seconds
+//
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let zero_speed_gap = 10s;           //  for new trip
+let zero_speed = 0.0;               //  to accommodate for measuremennt noise  
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+signals
+| project signal_ts, serno, km=MILE_KM, speed=V_VEH_COG, engine_speed=AVL_RPM_ENG_CRSH, vehicle_status=ST_KL, driver_buckled=ST_SEAT_OCCU_DR
+| where signal_ts between(stime..etime) and serno in(cars)
+| order by serno asc, signal_ts asc
+| where speed > zero_speed
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= zero_speed_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| summarize min(signal_ts), max(signal_ts), num=count() by serno, seg_id
+| order by serno asc, seg_id asc
+
+//
+// Trip definition #2:
+//
+// 2)	A new trip starts, whenever engine speed (AVL_RPM_ENG_CRSH) is going down to zero for > 3 seconds
+//
+//  But currently AVL_RPM_ENG_CRSH is empty...
+//
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let zero_engine_speed_gap = 3s;
+let zero_engine_speed = 0.0;  
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+signals
+| project signal_ts, serno, km=MILE_KM, speed=V_VEH_COG, engine_speed=AVL_RPM_ENG_CRSH, vehicle_status=ST_KL, driver_buckled=ST_SEAT_OCCU_DR
+| where signal_ts between(stime..etime) and serno in(cars)
+| order by serno asc, signal_ts asc
+| where engine_speed > zero_engine_speed 
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= zero_engine_speed_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| summarize min(signal_ts), max(signal_ts), num=count() by serno, seg_id
+| order by serno asc, seg_id asc
+
+//
+// Trip definition #3:
+//
+// 3)	A new trip starts, whenever the vehicle status (ST_KL) is leaves the status A (hex) for > 3 seconds
+//
+//
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let vehicle_status_gap = 3s;
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+signals
+| project signal_ts, serno, km=MILE_KM, speed=V_VEH_COG, engine_speed=AVL_RPM_ENG_CRSH, vehicle_status=ST_KL, driver_buckled=ST_SEAT_OCCU_DR
+| where signal_ts between(stime..etime) and serno in(cars)
+| order by serno asc, signal_ts asc
+| where vehicle_status != 0xA 
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= vehicle_status_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| summarize min(signal_ts), max(signal_ts), num=count() by serno, seg_id
+| order by serno asc, seg_id asc
+
+//
+// Trip definition #4:
+//
+// 4)	A new trip starts, whenever the driver gehts buckled (ST_SEAT_OCCU_DR 0 => 3) and unbuckled (3 => 0)
+//
+//  But currently ST_SEAT_OCCU_DR has only 4 (or empty)...
+//
+
+
+//
+// Trip definition #5:
+//
+// A new trip starts whenever there is signals gap of more than 5m
+//
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let break_gap = 5m;               //  gap of missing samples: below it we fill missing bins; above it we close the session segment
+let zero_speed_threshold = 10s;
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+signals
+| project signal_ts, serno, km=MILE_KM, speed=V_VEH_COG, engine_speed=AVL_RPM_ENG_CRSH, vehicle_status=ST_KL, driver_buckled=ST_SEAT_OCCU_DR
+| where signal_ts between(stime..etime) and serno in(cars)
+| order by serno asc, signal_ts asc
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= break_gap) or (serno != prev(serno)), 1, 0)
+| extend seg_id = row_cumsum(seg_start, serno != prev(serno))
+| summarize min(signal_ts), max(signal_ts), num=count() by serno, seg_id
+| order by serno asc, seg_id asc
+
+

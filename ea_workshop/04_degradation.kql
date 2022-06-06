@@ -1,0 +1,484 @@
+//First check the basic query and compare with the Python script
+database('mdr').job
+| where job_name == "Diag%startDevice" and isnotempty( sys_input_time) // Daten aus MDR Job Tabelle laden
+| project serno, sys_input_time, vin7 = substring(job.vin, strlen(job.vin)-7), eseries = job.fa.eSeries // Tabelle mit vin7 erstellen
+| project serno, id=strcat(serno,"@",vin7), sys_input_time, vin7, eseries // Tabelle mit eindeitiger ID aus Serno und vin7 da eine MDR in verschiedene Fahrzeuge eingebaut werden kann
+| summarize arg_max(sys_input_time,*) by ['id']
+| summarize arg_max(sys_input_time,*) by serno
+| where eseries == "G008" //or eseries == "I020" // möglicher Filter auf Fahrzeugtyp
+//| where vin7 == "ST10055"
+| project serno, vin7, eseries
+| join kind=leftouter (database("mdr-signals").signals // Join mit Datentabelle
+//++++++++++++++++ Zeitfilter ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal_ts  > ago(4d)
+//++++++++++++++++ Filterung GPS +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_QUAL_PO < 4094
+    | where signal.ST_LAT_NAVI < 179
+    | where signal.ST_LAT_NAVI > 1
+    | where signal.ST_LONG_NAVI < 179
+    | where signal.ST_LONG_NAVI > 1
+//++++++++++++++++ Filterung Moment verfügbar ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where isnotempty(signal.TORQ_VEH_DYNMC) and isnotempty(signal.TAR_WMOM_PT_SUM_COOTD)
+//++++++++++++++++ Filterung plausible Geschwindigkeit +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.V_VEH_COG < 400
+//++++++++++++++++ Prüfung PWF Zustand +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_CON_VEH == 10 or signal.ST_CON_VEH == 7 or signal.ST_CON_VEH == 8 or signal.ST_CON_VEH == 12
+//++++++++++++++++ Tabelle anlegen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | project  serno, signal_ts,
+//++++++++++++++++ Fahrzeug u. Umfeld ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        V_VEH_COG=toreal(signal.V_VEH_COG),                                                                                     // Fahrzeuggeschwindigkeit
+        ACLNX_COG=toreal(signal.ACLNX_COG),                                                                                     // Längsbeschleunigung
+        MILE_KM_TOT=toreal(signal.MILE_KM_TOT),                                                                                 // Kilometer
+        AVL_ANG_ACPD_VIRT=toint(signal.AVL_ANG_ACPD_VIRT),                                                                      // Virtueller Fahrpedalwinkel
+        ST_CON_VEH=toint(signal.ST_CON_VEH),                                                                                    // PWF Zustand
+        TAR_WMOM_PT_SUM_COOTD=toreal(signal.TAR_WMOM_PT_SUM_COOTD),                                                             // Unbegrenzter, ungefilterter Fahrerwunsch
+        TORQ_VEH_DYNMC=toreal(signal.TORQ_VEH_DYNMC),                                                                           // Begrenzter, gefilterter Fahrerwunsch
+        ST_LAT_NAVI=toreal(signal.ST_LAT_NAVI),                                                                                 // Lat. GPS - Fehlerwert=180, Signal nicht Verfügbar= 
+        ST_LONG_NAVI=toreal(signal.ST_LONG_NAVI),                                                                               // Long. GPS
+        ST_QUAL_PO=toint(signal.ST_QUAL_PO),                                                                                    // Qualifier GPS Signal
+        AVL_LOGR_RW=toreal(signal.AVL_LOGR_RW),                                                                                 // Ist_Längsneigung_Fahrbahn
+        QU_AVL_LOGR_RW=toint(signal.QU_AVL_LOGR_RW),                                                                            // Qualifier_Ist_Längsneigung_Fahrbahn
+        TEMP_EX=toreal(signal.TEMP_EX),                                                                                         // Außentemperatur
+        ST_CHGRDI=toint(signal.ST_CHGRDI),                                                                                      // Status Ladebereitschaft 0=keine Ladebereitsschaft, 1=Ladebereit, 3=Signal ungültig
+//++++++++++++++++ Antrieb ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 
+        AVL_WMOM_PT_SUM=toreal(signal.AVL_WMOM_PT_SUM),                                                                         // Ist_Radmoment_Antriebsstrang_Summe
+        AVL_WMOM_PT_SUM_MAX=toreal(signal.AVL_WMOM_PT_SUM_MAX),                                                                 // Max. Moment, das der Fahrerwunsch anfordern kann
+        AVL_WMOM_PT_SUM_FAST_TOP=toreal(signal.AVL_WMOM_PT_SUM_FAST_TOP),                                                       // Max. strategische Momentfreigabe EM am Rad
+        //LoadIndexSourceMotor=toint(signal.LoadIndexSourceMotor),                                                                // Belastungsindex HVS Entladen
+        //LoadIndexSourceGen=toint(signal.LoadIndexSourceGen),                                                                    // Belastungsindex HVS Laden
+//++++++++++++++++ HEAT +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        TorqueEmETractSys1MotorStatic=toreal(signal.TorqueEmETractSys1MotorStatic),                                             // Max. mot. EM-Moment Sys. 1
+        TorqueEmETractSys1GeneratorStatic=toreal(signal.TorqueEmETractSys1GeneratorStatic),                                     // Max. gen. EM-Moment Sys. 1
+        TemperatureETractSys1EmActualValue=toreal(signal.TemperatureETractSys1EmActualValue),                                   // Temp. EM Sys. 1 (Stator)
+        TemperatureETractSys1EmRotorActualValue=toreal(signal.TemperatureETractSys1EmRotorActualValue),                         // Temp. EM Rotor Sys. 1
+        TemperatureETractSys1GbxOilActualValue=toreal(signal.TemperatureETractSys1GbxOilActualValue),                           // Temp. Getriebe Sys. 1
+        TemperatureETractSys1InverterActualValue=toreal(signal.TemperatureETractSys1InverterActualValue),                       // Temp. Invtr. Sys. 1
+        TorqueEmETractSys1ActualValue=toreal(signal.TorqueEmETractSys1ActualValue),                                             // Moment EM. Sys. 1
+        TargetEMRpmETractSys1=toreal(signal.TargetEMRpmETractSys1),                                                             // Drehzahl EM. Sys. 1
+        OperatingModeETractSys1ActualValue=toint(signal.OperatingModeETractSys1ActualValue),                                    // Ist-Betriebsart Sys. 1
+        StatusETractSys1Degradation=toint(signal.StatusETractSys1Degradation),                                                  // Status Derating EM Sys. 1
+        StatusETractSys1CoolingActualValue=toint(signal.StatusETractSys1CoolingActualValue),                                    // Therm. Auslastung EM. 1 [0..100%]
+//++++++++++++++++ HVS +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        PowerHvstoDurationDischargeMax=toreal(signal.PowerHvstoDurationDischargeMax),                                           // Leistungsfreigabe mot. von HVS Dauer
+        PowerHvstoDurationChargeMax=toreal(signal.PowerHvstoDurationChargeMax),                                                 // Leistungsfreigabe gen. von HVS Dauer
+        PowerHvstoAbsoluteDischargeMax=toreal(signal.PowerHvstoAbsoluteDischargeMax),                                           // Leistungsfreigabe mot. von HVS Peak
+        PowerHvstoAbsoluteChargeMax=toreal(signal.PowerHvstoAbsoluteChargeMax),                                                 // Leistungsfreigabe gen. von HVS Peak
+        StatusDegradationHighVoltageStorageCharge=toint(signal.StatusDegradationHighVoltageStorageCharge),                      // Ladeleistung eingeschränkt
+        StatusDegradationHighVoltageStorageDischarge=toint(signal.StatusDegradationHighVoltageStorageDischarge),                // Entladeleistung eingeschränkt
+        AVL_TEMP_HVSTO=toreal(signal.AVL_TEMP_HVSTO),                                                                           // HVS Temperatur
+        AVL_TEMP_HVSTO_MAX=toreal(signal.AVL_TEMP_HVSTO_MAX),                                                                   // Max. HVS Temperatur
+        AVL_TEMP_HVSTO_MIN=toreal(signal.AVL_TEMP_HVSTO_MIN),                                                                   // Min. HVS Temperatur
+        DISP_CHGCOND_HVSTO=toint(signal.DISP_CHGCOND_HVSTO),                                                                    // SOC Anzeige
+        ActualValueCurrentHighVoltageStorage=toreal(signal.ActualValueCurrentHighVoltageStorage),                               // Strom HVS
+        ActualValueVoltageHighVoltageStorage=toreal(signal.ActualValueVoltageHighVoltageStorage),                               // Spannung HVS
+        StatusThermicCapacityUtilizationHighVoltageStorage=toreal(signal.StatusThermicCapacityUtilizationHighVoltageStorage),   // StatusThermicCapacityUtilizationHighVoltageStorage
+        VoltageMinimumDischargeHighVoltageStorage=toreal(signal.VoltageMinimumDischargeHighVoltageStorage),                     // Max. Entladerspannung
+        VoltageMaximumChargeHighVoltageStorage=toreal(signal.VoltageMaximumChargeHighVoltageStorage),                           // Max. Laderspannung
+        CurrentDynamicMaximumDischargeHighVoltageStorage=toreal(signal.CurrentDynamicMaximumDischargeHighVoltageStorage),       // Max. Entladestrom
+        CurrentDynamicMaximumChargeHighVoltageStorage=toreal(signal.CurrentDynamicMaximumChargeHighVoltageStorage),             // Max. Ladestrom
+//++++++++++++++++ Kabel ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        StressIndexLt1HVS=toint(signal.StressIndexLt1HVS),                                                                      // Index thermische Belastung LT1
+        TempETractSys1DirectCurrentPlug=toreal(signal.TempETractSys1DirectCurrentPlug),                                         // Temperatur SensCon HEAT 1
+//++++++++++++++++ Verbrauch ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        AVL_ENERG_COSP_MOT_TRCT=toreal(signal.AVL_ENERG_COSP_MOT_TRCT),                                                         // Traktionsverbrauch
+        AVL_ENERG_MOT_RECUP=toreal(signal.AVL_ENERG_MOT_RECUP),                                                                 // Reku-"Verbrauch"
+        AVL_AUXC_ENERG=toreal(signal.AVL_AUXC_ENERG)                                                                            // Nebenverbrauch
+    )
+    on serno
+//++++++++++++++++ Tabelle anpassen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+| project-away serno1
+| where isnotempty(serno)
+| where isnotempty(signal_ts)
+| sort by vin7 asc, signal_ts asc
+| extend start = row_window_session(signal_ts, 1d, 5min, ST_CON_VEH != prev(ST_CON_VEH))
+| where ST_CON_VEH == 10
+//define where a segment starts: where signal_ts and start matches
+| extend seg_start = iff((start==signal_ts), 1, 0)
+| order by vin7, signal_ts asc
+//do a cumulative rowsum as long as the vin is identical
+| extend seg_id = row_cumsum(seg_start, vin7 != prev(vin7))
+//create a new session and to uniquely identify it add year and day of the year to the session in case we have to recalculate
+| extend session = strcat(vin7, '@', seg_id, '-', getyear(signal_ts), '-', datetime_part('DayOfYear', signal_ts))
+//
+//calculate time steps
+| extend ts = datetime_diff('millisecond',signal_ts,prev(signal_ts))
+| extend step = todouble(row_cumsum(ts, vin7 != prev(vin7)))/1000
+| project-away ts, start
+//calculate degradation
+| extend tc = (TAR_WMOM_PT_SUM_COOTD-TORQ_VEH_DYNMC)/TAR_WMOM_PT_SUM_COOTD
+| extend ST_DegradAntr = iff((TAR_WMOM_PT_SUM_COOTD>300) and (tc>0.1), 1, 0)
+| project-away tc
+//
+| extend degrad_start = tostring(row_window_session(signal_ts, 1s, 1s, ST_DegradAntr != prev(ST_DegradAntr)))
+//filter
+| take 100
+
+//Now we have the challenge that we have to filter dynamically on sessions and specific properties which have to be calculated during runtime.
+//Basically this is the same query and we will materialize parts of it for better performance.
+let meanV=30;  //      # durchschnittliche Mindestgeschwindigkeit einer Session
+let length=10; //       # Mindestdauer einer Session
+let cachedResult = toscalar(database('mdr').job
+| where job_name == "Diag%startDevice" and isnotempty( sys_input_time) // Daten aus MDR Job Tabelle laden
+| project serno, sys_input_time, vin7 = substring(job.vin, strlen(job.vin)-7), eseries = job.fa.eSeries // Tabelle mit vin7 erstellen
+| project serno, id=strcat(serno,"@",vin7), sys_input_time, vin7, eseries // Tabelle mit eindeitiger ID aus Serno und vin7 da eine MDR in verschiedene Fahrzeuge eingebaut werden kann
+| summarize arg_max(sys_input_time,*) by ['id']
+| summarize arg_max(sys_input_time,*) by serno
+| where eseries == "G008" //or eseries == "I020" // möglicher Filter auf Fahrzeugtyp
+//| where vin7 == "ST10055"
+| project serno, vin7, eseries
+| join kind=leftouter (database("mdr-signals").signals // Join mit Datentabelle
+//++++++++++++++++ Zeitfilter ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal_ts  > ago(4d)
+//++++++++++++++++ Filterung GPS +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_QUAL_PO < 4094
+    | where signal.ST_LAT_NAVI < 179
+    | where signal.ST_LAT_NAVI > 1
+    | where signal.ST_LONG_NAVI < 179
+    | where signal.ST_LONG_NAVI > 1
+//++++++++++++++++ Filterung plausible Geschwindigkeit +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.V_VEH_COG < 400
+//++++++++++++++++ Prüfung PWF Zustand +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_CON_VEH == 10 or signal.ST_CON_VEH == 7 or signal.ST_CON_VEH == 8 or signal.ST_CON_VEH == 12
+//++++++++++++++++ Tabelle anlegen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | project  serno, signal_ts,
+//++++++++++++++++ Fahrzeug u. Umfeld ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        V_VEH_COG=toreal(signal.V_VEH_COG),
+        ST_CON_VEH=toint(signal.ST_CON_VEH),
+        TAR_WMOM_PT_SUM_COOTD=toreal(signal.TAR_WMOM_PT_SUM_COOTD),
+        TORQ_VEH_DYNMC=toreal(signal.TORQ_VEH_DYNMC)
+    )
+    on serno
+//++++++++++++++++ Tabelle anpassen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+| project-away serno1
+| where isnotempty(serno)
+| where isnotempty(signal_ts)
+| sort by vin7 asc, signal_ts asc
+| extend start = row_window_session(signal_ts, 1d, 5min, ST_CON_VEH != prev(ST_CON_VEH))
+//define where a segment starts: where signal_ts and start matches
+| extend seg_start = iff((start==signal_ts), 1, 0)
+| order by vin7, signal_ts asc
+//do a cumulative rowsum as long as the vin is identical
+| extend seg_id = row_cumsum(seg_start, vin7 != prev(vin7))
+//create a new session and to uniquely identify it add year and day of the year to the session in case we have to recalculate
+| extend session = strcat(vin7, '@', seg_id, '-', getyear(signal_ts), '-', datetime_part('DayOfYear', signal_ts))
+//calculate degradation
+| extend tc = (TAR_WMOM_PT_SUM_COOTD-TORQ_VEH_DYNMC)/TAR_WMOM_PT_SUM_COOTD
+| extend ST_DegradAntr = iff((TAR_WMOM_PT_SUM_COOTD>300) and (tc>0.1), 1, 0)
+| project-away tc
+//filter
+| summarize mean_speed = avg(V_VEH_COG), duration = datetime_diff('Minute', max(signal_ts), min(signal_ts)), count_degrad = count(ST_DegradAntr) by session //, mints = min(signal_ts), maxts=max(signal_ts)
+| where mean_speed > meanV and duration > length
+| project session
+| distinct session);
+print cachedResult
+
+//Same goes for the KPIs of the data
+let meanV=30;  //      # durchschnittliche Mindestgeschwindigkeit einer Session
+let length=10; //       # Mindestdauer einer Session
+let degrad_cache = materialize(database('mdr').job
+| where job_name == "Diag%startDevice" and isnotempty( sys_input_time) // Daten aus MDR Job Tabelle laden
+| project serno, sys_input_time, vin7 = substring(job.vin, strlen(job.vin)-7), eseries = job.fa.eSeries // Tabelle mit vin7 erstellen
+| project serno, id=strcat(serno,"@",vin7), sys_input_time, vin7, eseries // Tabelle mit eindeitiger ID aus Serno und vin7 da eine MDR in verschiedene Fahrzeuge eingebaut werden kann
+| summarize arg_max(sys_input_time,*) by ['id']
+| summarize arg_max(sys_input_time,*) by serno
+| where eseries == "G008" //or eseries == "I020" // möglicher Filter auf Fahrzeugtyp
+//| where vin7 == "ST10055"
+| project serno, vin7, eseries
+| join kind=leftouter (database("mdr-signals").signals // Join mit Datentabelle
+//++++++++++++++++ Zeitfilter ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal_ts  > ago(4d)
+//++++++++++++++++ Filterung GPS +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_QUAL_PO < 4094
+    | where signal.ST_LAT_NAVI < 179
+    | where signal.ST_LAT_NAVI > 1
+    | where signal.ST_LONG_NAVI < 179
+    | where signal.ST_LONG_NAVI > 1
+//++++++++++++++++ Filterung Moment verfügbar ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where isnotempty(signal.TORQ_VEH_DYNMC) and isnotempty(signal.TAR_WMOM_PT_SUM_COOTD)
+//++++++++++++++++ Filterung plausible Geschwindigkeit +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.V_VEH_COG < 400
+//++++++++++++++++ Prüfung PWF Zustand +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_CON_VEH == 10 or signal.ST_CON_VEH == 7 or signal.ST_CON_VEH == 8 or signal.ST_CON_VEH == 12
+//++++++++++++++++ Tabelle anlegen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | project  serno, signal_ts,
+//++++++++++++++++ Fahrzeug u. Umfeld ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        V_VEH_COG=toreal(signal.V_VEH_COG),                                                                                     // Fahrzeuggeschwindigkeit                                                                                   // PWF Zustand
+        TAR_WMOM_PT_SUM_COOTD=toreal(signal.TAR_WMOM_PT_SUM_COOTD),                                                             // Unbegrenzter, ungefilterter Fahrerwunsch
+        TORQ_VEH_DYNMC=toreal(signal.TORQ_VEH_DYNMC),                                                                           // Begrenzter, gefilterter Fahrerwunsch
+        ST_LAT_NAVI=toreal(signal.ST_LAT_NAVI),
+        ST_CON_VEH=toint(signal.ST_CON_VEH)
+    )
+    on serno
+//++++++++++++++++ Tabelle anpassen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+| project-away serno1
+| where isnotempty(serno)
+| where isnotempty(signal_ts)
+| sort by vin7 asc, signal_ts asc
+| extend start = row_window_session(signal_ts, 1d, 5min, ST_CON_VEH != prev(ST_CON_VEH))
+| where ST_CON_VEH == 10
+//define where a segment starts: where signal_ts and start matches
+| extend seg_start = iff((start==signal_ts), 1, 0)
+| order by vin7, signal_ts asc
+//do a cumulative rowsum as long as the vin is identical
+| extend seg_id = row_cumsum(seg_start, vin7 != prev(vin7))
+//create a new session and to uniquely identify it add year and day of the year to the session in case we have to recalculate
+| extend session = strcat(vin7, '@', seg_id, '-', getyear(signal_ts), '-', datetime_part('DayOfYear', signal_ts))
+//calculate time steps
+| extend ts = datetime_diff('millisecond',signal_ts,prev(signal_ts))
+| extend step = todouble(row_cumsum(ts, vin7 != prev(vin7)))/1000
+| project-away ts, start
+//calculate degradation
+| extend tc = (TAR_WMOM_PT_SUM_COOTD-TORQ_VEH_DYNMC)/TAR_WMOM_PT_SUM_COOTD
+| extend ST_DegradAntr = iff((TAR_WMOM_PT_SUM_COOTD>300) and (tc>0.1), 1, 0)
+| project-away tc
+//
+| where ST_DegradAntr == 1
+| extend degrad_start = tostring(row_window_session(signal_ts, 1s, 1s, ST_DegradAntr != prev(ST_DegradAntr)))
+| extend degrad_dur_temp=row_cumsum(ST_DegradAntr, degrad_start != prev(degrad_start))
+| summarize degrad_dur = arg_max(degrad_dur_temp, degrad_start) by serno, degrad_start
+| project-away degrad_start1
+);
+degrad_cache
+| take 100
+
+
+//The complete massive query...
+let meanV=30;  //      # durchschnittliche Mindestgeschwindigkeit einer Session
+let length=10; //       # Mindestdauer einer Session
+let cachedResult = toscalar(database('mdr').job
+| where job_name == "Diag%startDevice" and isnotempty( sys_input_time) // Daten aus MDR Job Tabelle laden
+| project serno, sys_input_time, vin7 = substring(job.vin, strlen(job.vin)-7), eseries = job.fa.eSeries // Tabelle mit vin7 erstellen
+| project serno, id=strcat(serno,"@",vin7), sys_input_time, vin7, eseries // Tabelle mit eindeitiger ID aus Serno und vin7 da eine MDR in verschiedene Fahrzeuge eingebaut werden kann
+| summarize arg_max(sys_input_time,*) by ['id']
+| summarize arg_max(sys_input_time,*) by serno
+| where eseries == "G008" //or eseries == "I020" // möglicher Filter auf Fahrzeugtyp
+//| where vin7 == "ST10055"
+| project serno, vin7, eseries
+| join kind=leftouter (database("mdr-signals").signals // Join mit Datentabelle
+//++++++++++++++++ Zeitfilter ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal_ts  > ago(4d)
+//++++++++++++++++ Filterung GPS +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_QUAL_PO < 4094
+    | where signal.ST_LAT_NAVI < 179
+    | where signal.ST_LAT_NAVI > 1
+    | where signal.ST_LONG_NAVI < 179
+    | where signal.ST_LONG_NAVI > 1
+//++++++++++++++++ Filterung plausible Geschwindigkeit +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.V_VEH_COG < 400
+//++++++++++++++++ Prüfung PWF Zustand +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_CON_VEH == 10 or signal.ST_CON_VEH == 7 or signal.ST_CON_VEH == 8 or signal.ST_CON_VEH == 12
+//++++++++++++++++ Tabelle anlegen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | project  serno, signal_ts,
+//++++++++++++++++ Fahrzeug u. Umfeld ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        V_VEH_COG=toreal(signal.V_VEH_COG),
+        ST_CON_VEH=toint(signal.ST_CON_VEH),
+        TAR_WMOM_PT_SUM_COOTD=toreal(signal.TAR_WMOM_PT_SUM_COOTD),
+        TORQ_VEH_DYNMC=toreal(signal.TORQ_VEH_DYNMC)
+    )
+    on serno
+//++++++++++++++++ Tabelle anpassen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+| project-away serno1
+| where isnotempty(serno)
+| where isnotempty(signal_ts)
+| sort by vin7 asc, signal_ts asc
+| extend start = row_window_session(signal_ts, 1d, 5min, ST_CON_VEH != prev(ST_CON_VEH))
+//define where a segment starts: where signal_ts and start matches
+| extend seg_start = iff((start==signal_ts), 1, 0)
+| order by vin7, signal_ts asc
+//do a cumulative rowsum as long as the vin is identical
+| extend seg_id = row_cumsum(seg_start, vin7 != prev(vin7))
+//create a new session and to uniquely identify it add year and day of the year to the session in case we have to recalculate
+| extend session = strcat(vin7, '@', seg_id, '-', getyear(signal_ts), '-', datetime_part('DayOfYear', signal_ts))
+//calculate degradation
+| extend tc = (TAR_WMOM_PT_SUM_COOTD-TORQ_VEH_DYNMC)/TAR_WMOM_PT_SUM_COOTD
+| extend ST_DegradAntr = iff((TAR_WMOM_PT_SUM_COOTD>300) and (tc>0.1), 1, 0)
+| project-away tc
+//filter
+| summarize mean_speed = avg(V_VEH_COG), duration = datetime_diff('Minute', max(signal_ts), min(signal_ts)), count_degrad = count(ST_DegradAntr) by session //, mints = min(signal_ts), maxts=max(signal_ts)
+| where mean_speed > meanV and duration > length
+| project session
+| distinct session);
+let degrad_cache = materialize(database('mdr').job
+| where job_name == "Diag%startDevice" and isnotempty( sys_input_time) // Daten aus MDR Job Tabelle laden
+| project serno, sys_input_time, vin7 = substring(job.vin, strlen(job.vin)-7), eseries = job.fa.eSeries // Tabelle mit vin7 erstellen
+| project serno, id=strcat(serno,"@",vin7), sys_input_time, vin7, eseries // Tabelle mit eindeitiger ID aus Serno und vin7 da eine MDR in verschiedene Fahrzeuge eingebaut werden kann
+| summarize arg_max(sys_input_time,*) by ['id']
+| summarize arg_max(sys_input_time,*) by serno
+| where eseries == "G008" //or eseries == "I020" // möglicher Filter auf Fahrzeugtyp
+//| where vin7 == "ST10055"
+| project serno, vin7, eseries
+| join kind=leftouter (database("mdr-signals").signals // Join mit Datentabelle
+//++++++++++++++++ Zeitfilter ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal_ts  > ago(4d)
+//++++++++++++++++ Filterung GPS +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_QUAL_PO < 4094
+    | where signal.ST_LAT_NAVI < 179
+    | where signal.ST_LAT_NAVI > 1
+    | where signal.ST_LONG_NAVI < 179
+    | where signal.ST_LONG_NAVI > 1
+//++++++++++++++++ Filterung Moment verfügbar ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where isnotempty(signal.TORQ_VEH_DYNMC) and isnotempty(signal.TAR_WMOM_PT_SUM_COOTD)
+//++++++++++++++++ Filterung plausible Geschwindigkeit +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.V_VEH_COG < 400
+//++++++++++++++++ Prüfung PWF Zustand +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_CON_VEH == 10 or signal.ST_CON_VEH == 7 or signal.ST_CON_VEH == 8 or signal.ST_CON_VEH == 12
+//++++++++++++++++ Tabelle anlegen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | project  serno, signal_ts,
+//++++++++++++++++ Fahrzeug u. Umfeld ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        V_VEH_COG=toreal(signal.V_VEH_COG),                                                                                     // Fahrzeuggeschwindigkeit                                                                                   // PWF Zustand
+        TAR_WMOM_PT_SUM_COOTD=toreal(signal.TAR_WMOM_PT_SUM_COOTD),                                                             // Unbegrenzter, ungefilterter Fahrerwunsch
+        TORQ_VEH_DYNMC=toreal(signal.TORQ_VEH_DYNMC),                                                                           // Begrenzter, gefilterter Fahrerwunsch
+        ST_LAT_NAVI=toreal(signal.ST_LAT_NAVI),
+        ST_CON_VEH=toint(signal.ST_CON_VEH)
+    )
+    on serno
+//++++++++++++++++ Tabelle anpassen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+| project-away serno1
+| where isnotempty(serno)
+| where isnotempty(signal_ts)
+| sort by vin7 asc, signal_ts asc
+| extend start = row_window_session(signal_ts, 1d, 5min, ST_CON_VEH != prev(ST_CON_VEH))
+| where ST_CON_VEH == 10
+//define where a segment starts: where signal_ts and start matches
+| extend seg_start = iff((start==signal_ts), 1, 0)
+| order by vin7, signal_ts asc
+//do a cumulative rowsum as long as the vin is identical
+| extend seg_id = row_cumsum(seg_start, vin7 != prev(vin7))
+//create a new session and to uniquely identify it add year and day of the year to the session in case we have to recalculate
+| extend session = strcat(vin7, '@', seg_id, '-', getyear(signal_ts), '-', datetime_part('DayOfYear', signal_ts))
+//calculate time steps
+| extend ts = datetime_diff('millisecond',signal_ts,prev(signal_ts))
+| extend step = todouble(row_cumsum(ts, vin7 != prev(vin7)))/1000
+| project-away ts, start
+//calculate degradation
+| extend tc = (TAR_WMOM_PT_SUM_COOTD-TORQ_VEH_DYNMC)/TAR_WMOM_PT_SUM_COOTD
+| extend ST_DegradAntr = iff((TAR_WMOM_PT_SUM_COOTD>300) and (tc>0.1), 1, 0)
+| project-away tc
+//
+| where ST_DegradAntr == 1
+| extend degrad_start = tostring(row_window_session(signal_ts, 1s, 1s, ST_DegradAntr != prev(ST_DegradAntr)))
+| extend degrad_dur_temp=row_cumsum(ST_DegradAntr, degrad_start != prev(degrad_start))
+| summarize degrad_dur = arg_max(degrad_dur_temp, degrad_start) by serno, degrad_start
+| project-away degrad_start1
+);
+degrad_cache
+| join kind = rightouter (
+database('mdr').job
+| where job_name == "Diag%startDevice" and isnotempty( sys_input_time) // Daten aus MDR Job Tabelle laden
+| project serno, sys_input_time, vin7 = substring(job.vin, strlen(job.vin)-7), eseries = job.fa.eSeries // Tabelle mit vin7 erstellen
+| project serno, id=strcat(serno,"@",vin7), sys_input_time, vin7, eseries // Tabelle mit eindeitiger ID aus Serno und vin7 da eine MDR in verschiedene Fahrzeuge eingebaut werden kann
+| summarize arg_max(sys_input_time,*) by ['id']
+| summarize arg_max(sys_input_time,*) by serno
+| where eseries == "G008" //or eseries == "I020" // möglicher Filter auf Fahrzeugtyp
+//| where vin7 == "ST10055"
+| project serno, vin7, eseries
+| join kind=leftouter (database("mdr-signals").signals // Join mit Datentabelle
+//++++++++++++++++ Zeitfilter ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal_ts  > ago(4d)
+//++++++++++++++++ Filterung GPS +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_QUAL_PO < 4094
+    | where signal.ST_LAT_NAVI < 179
+    | where signal.ST_LAT_NAVI > 1
+    | where signal.ST_LONG_NAVI < 179
+    | where signal.ST_LONG_NAVI > 1
+//++++++++++++++++ Filterung Moment verfügbar ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where isnotempty(signal.TORQ_VEH_DYNMC) and isnotempty(signal.TAR_WMOM_PT_SUM_COOTD)
+//++++++++++++++++ Filterung plausible Geschwindigkeit +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.V_VEH_COG < 400
+//++++++++++++++++ Prüfung PWF Zustand +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | where signal.ST_CON_VEH == 10 or signal.ST_CON_VEH == 7 or signal.ST_CON_VEH == 8 or signal.ST_CON_VEH == 12
+//++++++++++++++++ Tabelle anlegen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    | project  serno, signal_ts,
+//++++++++++++++++ Fahrzeug u. Umfeld ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        V_VEH_COG=toreal(signal.V_VEH_COG),                                                                                     // Fahrzeuggeschwindigkeit
+        ACLNX_COG=toreal(signal.ACLNX_COG),                                                                                     // Längsbeschleunigung
+        MILE_KM_TOT=toreal(signal.MILE_KM_TOT),                                                                                 // Kilometer
+        AVL_ANG_ACPD_VIRT=toint(signal.AVL_ANG_ACPD_VIRT),                                                                      // Virtueller Fahrpedalwinkel
+        ST_CON_VEH=toint(signal.ST_CON_VEH),                                                                                    // PWF Zustand
+        TAR_WMOM_PT_SUM_COOTD=toreal(signal.TAR_WMOM_PT_SUM_COOTD),                                                             // Unbegrenzter, ungefilterter Fahrerwunsch
+        TORQ_VEH_DYNMC=toreal(signal.TORQ_VEH_DYNMC),                                                                           // Begrenzter, gefilterter Fahrerwunsch
+        ST_LAT_NAVI=toreal(signal.ST_LAT_NAVI),                                                                                 // Lat. GPS - Fehlerwert=180, Signal nicht Verfügbar= 
+        ST_LONG_NAVI=toreal(signal.ST_LONG_NAVI),                                                                               // Long. GPS
+        ST_QUAL_PO=toint(signal.ST_QUAL_PO),                                                                                    // Qualifier GPS Signal
+        AVL_LOGR_RW=toreal(signal.AVL_LOGR_RW),                                                                                 // Ist_Längsneigung_Fahrbahn
+        QU_AVL_LOGR_RW=toint(signal.QU_AVL_LOGR_RW),                                                                            // Qualifier_Ist_Längsneigung_Fahrbahn
+        TEMP_EX=toreal(signal.TEMP_EX),                                                                                         // Außentemperatur
+        ST_CHGRDI=toint(signal.ST_CHGRDI),                                                                                      // Status Ladebereitschaft 0=keine Ladebereitsschaft, 1=Ladebereit, 3=Signal ungültig
+//++++++++++++++++ Antrieb ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 
+        AVL_WMOM_PT_SUM=toreal(signal.AVL_WMOM_PT_SUM),                                                                         // Ist_Radmoment_Antriebsstrang_Summe
+        AVL_WMOM_PT_SUM_MAX=toreal(signal.AVL_WMOM_PT_SUM_MAX),                                                                 // Max. Moment, das der Fahrerwunsch anfordern kann
+        AVL_WMOM_PT_SUM_FAST_TOP=toreal(signal.AVL_WMOM_PT_SUM_FAST_TOP),                                                       // Max. strategische Momentfreigabe EM am Rad
+        //LoadIndexSourceMotor=toint(signal.LoadIndexSourceMotor),                                                                // Belastungsindex HVS Entladen
+        //LoadIndexSourceGen=toint(signal.LoadIndexSourceGen),                                                                    // Belastungsindex HVS Laden
+//++++++++++++++++ HEAT +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        TorqueEmETractSys1MotorStatic=toreal(signal.TorqueEmETractSys1MotorStatic),                                             // Max. mot. EM-Moment Sys. 1
+        TorqueEmETractSys1GeneratorStatic=toreal(signal.TorqueEmETractSys1GeneratorStatic),                                     // Max. gen. EM-Moment Sys. 1
+        TemperatureETractSys1EmActualValue=toreal(signal.TemperatureETractSys1EmActualValue),                                   // Temp. EM Sys. 1 (Stator)
+        TemperatureETractSys1EmRotorActualValue=toreal(signal.TemperatureETractSys1EmRotorActualValue),                         // Temp. EM Rotor Sys. 1
+        TemperatureETractSys1GbxOilActualValue=toreal(signal.TemperatureETractSys1GbxOilActualValue),                           // Temp. Getriebe Sys. 1
+        TemperatureETractSys1InverterActualValue=toreal(signal.TemperatureETractSys1InverterActualValue),                       // Temp. Invtr. Sys. 1
+        TorqueEmETractSys1ActualValue=toreal(signal.TorqueEmETractSys1ActualValue),                                             // Moment EM. Sys. 1
+        TargetEMRpmETractSys1=toreal(signal.TargetEMRpmETractSys1),                                                             // Drehzahl EM. Sys. 1
+        OperatingModeETractSys1ActualValue=toint(signal.OperatingModeETractSys1ActualValue),                                    // Ist-Betriebsart Sys. 1
+        StatusETractSys1Degradation=toint(signal.StatusETractSys1Degradation),                                                  // Status Derating EM Sys. 1
+        StatusETractSys1CoolingActualValue=toint(signal.StatusETractSys1CoolingActualValue),                                    // Therm. Auslastung EM. 1 [0..100%]
+//++++++++++++++++ HVS +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        PowerHvstoDurationDischargeMax=toreal(signal.PowerHvstoDurationDischargeMax),                                           // Leistungsfreigabe mot. von HVS Dauer
+        PowerHvstoDurationChargeMax=toreal(signal.PowerHvstoDurationChargeMax),                                                 // Leistungsfreigabe gen. von HVS Dauer
+        PowerHvstoAbsoluteDischargeMax=toreal(signal.PowerHvstoAbsoluteDischargeMax),                                           // Leistungsfreigabe mot. von HVS Peak
+        PowerHvstoAbsoluteChargeMax=toreal(signal.PowerHvstoAbsoluteChargeMax),                                                 // Leistungsfreigabe gen. von HVS Peak
+        StatusDegradationHighVoltageStorageCharge=toint(signal.StatusDegradationHighVoltageStorageCharge),                      // Ladeleistung eingeschränkt
+        StatusDegradationHighVoltageStorageDischarge=toint(signal.StatusDegradationHighVoltageStorageDischarge),                // Entladeleistung eingeschränkt
+        AVL_TEMP_HVSTO=toreal(signal.AVL_TEMP_HVSTO),                                                                           // HVS Temperatur
+        AVL_TEMP_HVSTO_MAX=toreal(signal.AVL_TEMP_HVSTO_MAX),                                                                   // Max. HVS Temperatur
+        AVL_TEMP_HVSTO_MIN=toreal(signal.AVL_TEMP_HVSTO_MIN),                                                                   // Min. HVS Temperatur
+        DISP_CHGCOND_HVSTO=toint(signal.DISP_CHGCOND_HVSTO),                                                                    // SOC Anzeige
+        ActualValueCurrentHighVoltageStorage=toreal(signal.ActualValueCurrentHighVoltageStorage),                               // Strom HVS
+        ActualValueVoltageHighVoltageStorage=toreal(signal.ActualValueVoltageHighVoltageStorage),                               // Spannung HVS
+        StatusThermicCapacityUtilizationHighVoltageStorage=toreal(signal.StatusThermicCapacityUtilizationHighVoltageStorage),   // StatusThermicCapacityUtilizationHighVoltageStorage
+        VoltageMinimumDischargeHighVoltageStorage=toreal(signal.VoltageMinimumDischargeHighVoltageStorage),                     // Max. Entladerspannung
+        VoltageMaximumChargeHighVoltageStorage=toreal(signal.VoltageMaximumChargeHighVoltageStorage),                           // Max. Laderspannung
+        CurrentDynamicMaximumDischargeHighVoltageStorage=toreal(signal.CurrentDynamicMaximumDischargeHighVoltageStorage),       // Max. Entladestrom
+        CurrentDynamicMaximumChargeHighVoltageStorage=toreal(signal.CurrentDynamicMaximumChargeHighVoltageStorage),             // Max. Ladestrom
+//++++++++++++++++ Kabel ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        StressIndexLt1HVS=toint(signal.StressIndexLt1HVS),                                                                      // Index thermische Belastung LT1
+        TempETractSys1DirectCurrentPlug=toreal(signal.TempETractSys1DirectCurrentPlug),                                         // Temperatur SensCon HEAT 1
+//++++++++++++++++ Verbrauch ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        AVL_ENERG_COSP_MOT_TRCT=toreal(signal.AVL_ENERG_COSP_MOT_TRCT),                                                         // Traktionsverbrauch
+        AVL_ENERG_MOT_RECUP=toreal(signal.AVL_ENERG_MOT_RECUP),                                                                 // Reku-"Verbrauch"
+        AVL_AUXC_ENERG=toreal(signal.AVL_AUXC_ENERG)                                                                            // Nebenverbrauch
+    )
+    on serno
+//++++++++++++++++ Tabelle anpassen +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+| project-away serno1
+| where isnotempty(serno)
+| where isnotempty(signal_ts)
+| sort by vin7 asc, signal_ts asc
+| extend start = row_window_session(signal_ts, 1d, 5min, ST_CON_VEH != prev(ST_CON_VEH))
+| where ST_CON_VEH == 10
+//define where a segment starts: where signal_ts and start matches
+| extend seg_start = iff((start==signal_ts), 1, 0)
+| order by vin7, signal_ts asc
+//do a cumulative rowsum as long as the vin is identical
+| extend seg_id = row_cumsum(seg_start, vin7 != prev(vin7))
+//create a new session and to uniquely identify it add year and day of the year to the session in case we have to recalculate
+| extend session = strcat(vin7, '@', seg_id, '-', getyear(signal_ts), '-', datetime_part('DayOfYear', signal_ts))
+//
+| where session in (cachedResult)
+//calculate time steps
+| extend ts = datetime_diff('millisecond',signal_ts,prev(signal_ts))
+| extend step = todouble(row_cumsum(ts, vin7 != prev(vin7)))/1000
+| project-away ts, start
+//calculate degradation
+| extend tc = (TAR_WMOM_PT_SUM_COOTD-TORQ_VEH_DYNMC)/TAR_WMOM_PT_SUM_COOTD
+| extend ST_DegradAntr = iff((TAR_WMOM_PT_SUM_COOTD>300) and (tc>0.1), 1, 0)
+| project-away tc
+//
+| extend degrad_start = tostring(row_window_session(signal_ts, 1s, 1s, ST_DegradAntr != prev(ST_DegradAntr)))
+//filter
+) on $left.degrad_start == $right.degrad_start
+//| where isnotnull(degrad_dur)
+| project-away degrad_start1, serno
+| extend serno = serno1
+| project-away serno1
+| take 1000

@@ -1,0 +1,77 @@
+// Use case: Car Load
+
+// The current formula used in these examples to calculate the car load is torque*rpm (which is similar to calculating the HP of a car)
+// it is defined below at the beginning of each query as inline function.
+// it can be defined as a stored function and then can be used directly without declaring it inline.
+
+// in this query, we are calculating the for some vehicles the car load in each trip:
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let zero_speed_gap = 10s;           //  for new trip
+let zero_speed = 0.0;               //  to accommodate for measuremennt noise  
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+let CarLoad = (torque:long, rpm:long)
+{
+    torque * rpm
+};
+signals
+| project signal_ts, serno, km=MILE_KM, speed=V_VEH_COG, rpm=AVL_RPM_ENG_CRSH, vehicle_status=ST_KL, driver_buckled=ST_SEAT_OCCU_DR, torque = AVL_WMOM_PT_SUM 
+| where signal_ts between(stime..etime) and serno in (cars)
+| order by serno asc, signal_ts asc
+| where speed > zero_speed
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= zero_speed_gap) or (serno != prev(serno)), 1, 0)
+| extend trip_id = row_cumsum(seg_start, serno != prev(serno))
+| summarize TotalLoad = sum(CarLoad(torque,rpm)) by serno, trip_id
+
+
+
+
+// in this query, we are calculating the most loaded n trips for each vehicle (in this specific example n = 1).
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let zero_speed_gap = 10s;           //  for new trip
+let zero_speed = 0.0;               //  to accommodate for measuremennt noise  
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+let CarLoad = (torque:long, rpm:long)
+{
+    torque * rpm
+};
+signals
+| project signal_ts, serno, km=MILE_KM, speed=V_VEH_COG, rpm=AVL_RPM_ENG_CRSH, vehicle_status=ST_KL, driver_buckled=ST_SEAT_OCCU_DR, torque = AVL_WMOM_PT_SUM 
+| where signal_ts between(stime..etime) and serno in (cars)
+| order by serno asc, signal_ts asc
+| where speed > zero_speed
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= zero_speed_gap) or (serno != prev(serno)), 1, 0)
+| extend trip_id = row_cumsum(seg_start, serno != prev(serno))
+| top-nested of serno by void_column = max(1), top-nested 1 of trip_id by sum(CarLoad(torque,rpm))
+| project-away void_column
+
+
+
+
+// another approach to do the above (most loaded n = 1 trip for each vehcile) is using the partition by operator (both queries produces the same results):
+let stime = datetime(2019-04-30);
+let etime = datetime(2019-05-01);
+let zero_speed_gap = 10s;           //  for new trip
+let zero_speed = 0.0;               //  to accommodate for measuremennt noise  
+let cars = dynamic(['4174623', '4174649', '4174637', '4174587']);
+let CarLoad = (torque:long, rpm:long)
+{
+    torque * rpm
+};
+signals
+| project signal_ts, serno, km=MILE_KM, speed=V_VEH_COG, rpm=AVL_RPM_ENG_CRSH, vehicle_status=ST_KL, driver_buckled=ST_SEAT_OCCU_DR, torque = AVL_WMOM_PT_SUM 
+| where signal_ts between(stime..etime) and serno in (cars)
+| order by serno asc, signal_ts asc
+| where speed > zero_speed
+| extend seg_start = iff((signal_ts - prev(signal_ts, 1, datetime(2000-01-01)) >= zero_speed_gap) or (serno != prev(serno)), 1, 0)
+| extend trip_id = row_cumsum(seg_start, serno != prev(serno))
+| partition hint.materialized=true by serno
+(
+    summarize load = sum(CarLoad(torque, rpm)) by serno, trip_id
+    | top 1 by load
+)
+
+
+
+

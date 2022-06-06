@@ -1,0 +1,165 @@
+//Check data
+signals
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| take 10
+
+//Check distinct values
+signals
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| take 10000
+| distinct gear
+
+//Calculate time difference between each gear shift
+let id = 4530602;
+let stime = ago(4d);
+let etime = now();
+//We don't use start and endtime for now
+signals
+| where serno == id
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| take 10000
+| order by serno, signal_ts asc
+| extend time_diff = iff(serno != prev(serno), timespan(0), signal_ts-prev(signal_ts))
+
+//Great! Now we have the timespan for each record of the gear
+
+// Let's summarize that in case that the gear doesn't change
+let id = 4530602;
+let stime = ago(4d);
+let etime = now();
+//We don't use start and endtime for now
+signals
+| where serno == id
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| take 10000
+| order by serno, signal_ts asc
+| extend shift = iff(gear != prev(gear), 1, 0)
+| extend time_diff = iff(serno != prev(serno), timespan(0), signal_ts-prev(signal_ts))
+| extend secs = todouble(time_diff)/10000000
+| extend shift_id = row_cumsum(shift, serno != prev(serno))
+| extend shift_dur = row_cumsum(secs, shift != prev(shift))
+
+//Now, we now each shifting and how long the car remains in one gear.
+
+// Let's summarize that in case that the gear doesn't change
+let id = 4530602;
+let stime = ago(4d);
+let etime = now();
+//We don't use start and endtime for now
+let shift_start = materialize(
+signals
+| where serno == id
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| order by serno, signal_ts asc
+| extend shift = iff(gear != prev(gear), 1, 0)
+| extend time_diff = iff(serno != prev(serno), timespan(0), signal_ts-prev(signal_ts))
+| extend secs = todouble(time_diff)/10000000
+| extend shift_id = row_cumsum(shift, serno != prev(serno))
+| extend shift_dur = row_cumsum(secs, shift != prev(shift))
+| summarize shift_start = arg_min(signal_ts, shift_id) by serno, shift_id
+| project-away shift_id1);
+shift_start
+| join (signals
+| where serno == id
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| order by serno, signal_ts asc
+| extend shift = iff(gear != prev(gear), 1, 0)
+| extend time_diff = iff(serno != prev(serno), timespan(0), signal_ts-prev(signal_ts))
+| extend secs = todouble(time_diff)/10000000
+| extend shift_id = row_cumsum(shift, serno != prev(serno))
+| extend shift_dur = row_cumsum(secs, shift != prev(shift))
+| summarize shift_dur_max = arg_max(shift_dur, shift_id) by serno, shift_id, gear
+| project-away shift_id1) 
+on $left.serno == $right.serno and $left.shift_id == $right.shift_id
+| project-away shift_id1, serno1
+
+//Let's look at this graphically
+let id = 4530602;
+let stime = ago(4d);
+let etime = now();
+//We don't use start and endtime for now
+signals
+| where serno == id
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| order by serno, signal_ts asc
+| extend shift = iff(gear != prev(gear), 1, 0)
+| extend time_diff = iff(serno != prev(serno), timespan(0), signal_ts-prev(signal_ts))
+| extend secs = todouble(time_diff)/10000000
+| extend shift_id = row_cumsum(shift, serno != prev(serno))
+| extend shift_dur = row_cumsum(secs, shift != prev(shift))
+| summarize shift_start = arg_min(signal_ts, shift_id), shift_dur_max = arg_max(shift_dur, shift_id) by serno, shift_id, gear
+| project-away shift_id1, shift_id2
+| project shift_start, gear
+| render anomalychart  
+
+//Let's do an analysis how long cars normally stay in second gear.
+//Let's look at this graphically
+let id = 4530602;
+let gear_id = dynamic([7]); // or whatever second gear is
+let stime = ago(4d);
+let etime = now();
+//We don't use start and endtime for now
+signals
+| where serno == id
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| order by serno, signal_ts asc
+| extend shift = iff(gear != prev(gear), 1, 0)
+| extend time_diff = iff(serno != prev(serno), timespan(0), signal_ts-prev(signal_ts))
+| extend secs = todouble(time_diff)/10000000
+| extend shift_id = row_cumsum(shift, serno != prev(serno))
+| extend shift_dur = row_cumsum(secs, shift != prev(shift))
+| summarize shift_start = arg_min(signal_ts, shift_id), shift_dur_max = arg_max(shift_dur, shift_id) by serno, shift_id, gear
+| project-away shift_id1, shift_id2
+| where gear in (gear_id)
+| summarize min_shift_dur = min(shift_dur_max), avg_shift_dur = avg(shift_dur_max), max_shift_dur = max(shift_dur_max) by serno
+
+
+
+
+
+
+
+//Another way to do this with a join
+let id = 4530602;
+let gear_id = dynamic([7]); // or whatever second gear is
+let stime = ago(4d);
+let etime = now();
+//We don't use start and endtime for now
+let shift_start = materialize(
+signals
+| where serno == id
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| order by serno, signal_ts asc
+| extend shift = iff(gear != prev(gear), 1, 0)
+| extend time_diff = iff(serno != prev(serno), timespan(0), signal_ts-prev(signal_ts))
+| extend secs = todouble(time_diff)/10000000
+| extend shift_id = row_cumsum(shift, serno != prev(serno))
+| extend shift_dur = row_cumsum(secs, shift != prev(shift))
+| summarize shift_start = arg_min(signal_ts, shift_id) by serno, shift_id
+| project-away shift_id1);
+shift_start
+| join (signals
+| where serno == id
+| project serno, signal_ts, gear = toint(signal.ST_GRSEL_DRV)
+| where isnotempty(gear)
+| order by serno, signal_ts asc
+| extend shift = iff(gear != prev(gear), 1, 0)
+| extend time_diff = iff(serno != prev(serno), timespan(0), signal_ts-prev(signal_ts))
+| extend secs = todouble(time_diff)/10000000
+| extend shift_id = row_cumsum(shift, serno != prev(serno))
+| extend shift_dur = row_cumsum(secs, shift != prev(shift))
+| summarize shift_dur_max = arg_max(shift_dur, shift_id) by serno, shift_id, gear
+| project-away shift_id1) 
+on $left.serno == $right.serno and $left.shift_id == $right.shift_id
+| project-away shift_id1, serno1
+| where gear in (gear_id)
+| summarize min_shift_dur = min(shift_dur_max), avg_shift_dur = avg(shift_dur_max), max_shift_dur = max(shift_dur_max) by serno

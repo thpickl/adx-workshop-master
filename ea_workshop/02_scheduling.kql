@@ -1,0 +1,65 @@
+// First: Why the heck exporting csv files?
+// Second: Is a Azure Storage fine from where you can download it?
+
+// Visualisierung Rate Based Monitoring über Zeit am Beispiel Kat-Diagnose 
+job 
+| where job contains "RBMMODE9" 
+| where job_name == "obd2_validation" and occur_time > ago(30d) 
+| project serno, occur_time, vin=job.__vin, XWE=job.RBMMODE9.XWE_12, RBMMODE9=job.RBMMODE9.['4026'].decoded.RBMMODE9, job 
+| where isnotempty(vin) == true 
+| extend STAT_CATCOND1=RBMMODE9.STAT_CATCOND1_WERT, STAT_CATCOMP1=RBMMODE9.STAT_CATCOMP1_WERT 
+| where STAT_CATCOND1 >20 
+| extend RATIO = todouble(STAT_CATCOMP1)/todouble(STAT_CATCOND1) 
+| project d=todatetime(occur_time), RATIO, vin=tostring(vin) 
+| render timechart
+
+// Create a table
+.set-or-replace async kat_diagnose <| database('mdr').job 
+| where job contains "RBMMODE9" 
+| where job_name == "obd2_validation" and occur_time > ago(30d) 
+| project serno, occur_time, vin=job.__vin, XWE=job.RBMMODE9.XWE_12, RBMMODE9=job.RBMMODE9.['4026'].decoded.RBMMODE9, job 
+| where isnotempty(vin) == true 
+| extend STAT_CATCOND1=RBMMODE9.STAT_CATCOND1_WERT, STAT_CATCOMP1=RBMMODE9.STAT_CATCOMP1_WERT 
+| where STAT_CATCOND1 >20 
+| extend RATIO = todouble(STAT_CATCOMP1)/todouble(STAT_CATCOND1) 
+| project d=todatetime(occur_time), RATIO, vin=tostring(vin) 
+
+kat_diagnose
+| count
+
+// There are basically two ways of triggering Kusto Queries from external.
+// Logic Apps and Azure Data Factory
+
+
+//Short excurs on anomaly detection.
+let interval = 120min;
+let stime = datetime(2020-03-15);
+let etime = datetime(2020-03-31);
+kat_diagnose
+| make-series r=avg(RATIO) on d from stime to etime step interval by vin
+| extend ff = series_fill_forward(r, 0)
+| project-away r
+| render anomalychart  
+
+//If we don't want to have that viually but rather detect the anomalies in the tables we can do that aswell.
+let interval = 120min;
+let stime = datetime(2020-03-15);
+let etime = datetime(2020-03-31);
+let sensitivity=5;
+kat_diagnose
+| make-series r=avg(RATIO) on d from stime to etime step interval by vin
+| extend ff = series_fill_forward(r, 0)
+| extend (ad, score, baseline) = series_decompose_anomalies(ff, sensitivity)
+
+//With this data you can render great plots but you can also bring it back to non-dynamic data types
+let interval = 120min;
+let stime = datetime(2020-03-15);
+let etime = datetime(2020-03-31);
+let sensitivity=5;
+kat_diagnose
+| make-series r=avg(RATIO) on d from stime to etime step interval by vin
+| extend ff = series_fill_forward(r, 0)
+| extend (ad, score, baseline) = series_decompose_anomalies(ff, sensitivity)
+| mv-expand r, d, ff, ad, score, baseline
+//| where ad != 0
+| take 10000
