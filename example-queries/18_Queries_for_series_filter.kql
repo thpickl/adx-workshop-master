@@ -1,0 +1,143 @@
+// Plotting some wild timeseries data
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-01-09 09:00:00);
+job
+| project serno, occur_time
+| make-series n=dcount(serno) default=0 on occur_time from stime to etime step 30min
+| render timechart 
+
+// Using the built-in functionality
+let stime=datetime(2020-11-09 06:00:00);
+let etime=datetime(2021-01-09 09:00:00);
+job
+| project serno, occur_time
+| make-series n=dcount(serno) default=0 on occur_time from stime to etime step 30min
+| render anomalychart  
+
+
+// Use decompose function | example #1
+let stime=datetime(2020-11-09 06:00:00);
+let etime=datetime(2021-01-09 09:00:00);
+let bin_size=30min;
+job
+| project serno, occur_time
+| make-series n=dcount(serno) default=0 on occur_time from stime to etime step bin_size
+| extend (baseline, seasonal, trend, residual) = series_decompose(n, -1, 'linefit')  //  decomposition of a set of time series to seasonal, trend, residual, and baseline (seasonal+trend)
+| render timechart with(title='Serno Counts Decomposition', ysplit=panels)
+
+
+// Use decompose function | example #2
+let stime=datetime(2020-11-09 06:00:00);
+let etime=datetime(2021-01-09 09:00:00);
+let bin_size=30min;
+job
+| project serno, occur_time
+| make-series n=dcount(serno) default=0 on occur_time from stime to etime step bin_size
+| extend (ad, score, baseline) = series_decompose_anomalies(n)
+| render anomalychart with(anomalycolumns=ad)   
+
+// Add trendline
+let stime=datetime(2020-11-09 06:00:00);
+let etime=datetime(2021-01-09 09:00:00);
+let bin_size=30min;
+let sensitivity=1.5;
+job
+| project serno, occur_time
+| make-series n=dcount(serno) default=0 on occur_time from stime to etime step bin_size
+| extend (ad, score, baseline) = series_decompose_anomalies(n, sensitivity, -1, 'linefit')
+| render anomalychart with(anomalycolumns=ad)   
+
+// Change sensitivity to 0.5
+let stime=datetime(2019-11-09 06:00:00);
+let etime=datetime(2020-01-09 09:00:00);
+let bin_size=30min;
+let sensitivity=0.5;
+job
+| project serno, occur_time
+| make-series n=dcount(serno) default=0 on occur_time from stime to etime step bin_size
+| extend (ad, score, baseline) = series_decompose_anomalies(n, sensitivity, -1, 'linefit')
+| render anomalychart with(anomalycolumns=ad)
+
+
+// MDR job | avgSpeedKmH series_fir (finite impulse response) with moving average (MA) 
+let series = job
+| where getyear(occur_time) == 2019 and (getmonth(occur_time) == 10
+  or getmonth(occur_time) == 11 or getmonth(occur_time) == 12) and (serno == "4404971")
+| summarize avgSpeedKmh = avg(todecimal(job.avgSpeedKmh)) by serno, Timestamp = occur_time
+| order by Timestamp asc; 
+let min_t = toscalar(series | summarize min(Timestamp));
+let max_t = toscalar(series | summarize max(Timestamp));
+series
+| make-series AvgSpeed=avg(avgSpeedKmh) default=0 on Timestamp in range(min_t, max_t, 1d) by serno
+| extend AvgSpeedMA=series_fir(AvgSpeed, repeat(1, 4)) // roll up data points repeat(1, 8)
+| render timechart
+
+
+// MDR event_v2 | event_sgbd == "BZF_I20" with series_fir (finite impulse response) with moving average (MA) 
+let series = event_v2
+| where event_type == "dtc_event"
+| where occur_time > ago(300d)
+| where event_id == "0x025EB0" and event_sgbd == "BZF_I20" and eseries == "I020" and serno =="4174638"
+| summarize avgEventKM = avg(todouble(event_km)) by serno, Timestamp = occur_time, fzgtype
+| order by Timestamp asc; 
+let min_t = toscalar(series | summarize min(Timestamp));
+let max_t = toscalar(series | summarize max(Timestamp));
+series
+| make-series AvgEventKM=avg(avgEventKM) default=0 on Timestamp in range(min_t, max_t, 1d) by serno, fzgtype 
+| extend AvgEventKM_MA=series_fir(AvgEventKM, repeat(1, 15)) // roll up data points repeat(1, 15)
+| render timechart
+
+
+// MDR signals_500ms | bus_name == "IUK_CAN" and signal_name == "DIAG_ST_OBD_1_PT_5" and signal_value == "57" with series_fir (finite impulse response) with moving average (MA)
+let series = signals_500ms
+| where signal_ts > ago(14d)
+| where signal_ts == bin(signal_ts, 30m)
+| where serno == "D2E0255" and bus_name == "IUK_CAN" and signal_name == "DIAG_ST_OBD_1_PT_5" and signal_value == "57"
+| summarize cdSignal = count(toint(signal_value)) by serno, Timestamp = signal_ts, eseries, vin
+| order by Timestamp asc;
+let min_t = toscalar(series | summarize min(Timestamp));
+let max_t = toscalar(series | summarize max(Timestamp));
+series
+| make-series CdSignal=count(cdSignal) default=0 on Timestamp in range(min_t, max_t, 30m) by serno, eseries, vin 
+| extend CdSignal_MA=series_fir(CdSignal, repeat(1, 10)) // roll up data points repeat(1, 10)
+| render timechart
+
+
+// MDR event_v2 | event_id == "0x025EB0" and event_sgbd == "BZF_I20" and eseries == "I020" and serno =="4174638" with sdecomposition of a set of time series to seasonal, trend, residual and baseline
+let series = event_v2
+| where event_type == "dtc_event"
+| where occur_time > ago(90d)
+| where event_id == "0x025EB0" and event_sgbd == "BZF_I20" and eseries == "I020" and serno =="4174638"
+| summarize avgEventKM = avg(todouble(event_km)) by serno, Timestamp = occur_time, fzgtype
+| order by Timestamp asc; 
+let min_t = toscalar(series | summarize min(Timestamp));
+let max_t = toscalar(series | summarize max(Timestamp));
+series
+| make-series AvgEventKM=avg(avgEventKM) default=0 on Timestamp in range(min_t, max_t, 1d) by serno, fzgtype 
+| render anomalychart  
+| extend (baseline, seasonal, trend, residual) = series_decompose(AvgEventKM, -1, 'linefit')  //  decomposition of a set of time series to seasonal, trend, residual, and baseline (seasonal+trend)
+| render timechart with(title='event_id == "0x025EB0" and event_sgbd == "BZF_I20" and eseries == "I020" and serno =="4174638"', ysplit=panels)
+
+// Use decompose function
+let stime=datetime(2020-11-09 06:00:00);
+let etime=datetime(2021-01-09 09:00:00);
+let bin_size=30min;
+job
+| project serno, occur_time
+| make-series n=count(serno) default=0 on occur_time from stime to etime step bin_size
+| extend (ad, score, baseline) = series_decompose_anomalies(n)
+| render anomalychart with(anomalycolumns=ad)   
+
+
+// Forecasting
+let stime=datetime(2022-03-09 06:00:00);
+let etime=datetime(2022-05-25 09:00:00);
+let bin_size=30min;
+let horizon=30d;
+let forecast_bins=tolong(horizon/bin_size);
+job
+| project serno, occur_time
+| make-series n=dcount(serno) default=0 on occur_time from stime to etime step bin_size
+| extend forecast = series_decompose_forecast(n, forecast_bins)
+| render timechart 
+
